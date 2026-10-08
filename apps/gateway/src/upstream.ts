@@ -129,9 +129,14 @@ export async function upstreamRequest(
     }
     const record = asRecord(payload)
     // Never swallow a TXBoard application-level error with HTTP 200.
-    if (!response.ok || (Object.hasOwn(record, 'status') && record.status !== 'success')) {
+    if (!response.ok || record.status === 'fail') {
       const status = response.status >= 400 ? response.status : 400
       throw new GatewayFailure('UPSTREAM_ERROR', status, publicErrorMessage(status))
+    }
+    // An unknown status is not a TXBoard business failure. Treat its
+    // response as a broken contract rather than manufacturing HTTP 400.
+    if (Object.hasOwn(record, 'status') && record.status !== 'success') {
+      throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
     }
     if (record.status === 'success') {
       if (!Object.hasOwn(record, 'data')) {
