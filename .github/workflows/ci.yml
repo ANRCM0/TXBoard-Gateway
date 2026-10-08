@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.23.2'
           cache: npm
@@ -36,7 +36,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: Validate isolated staging Compose contract
+        env:
+          TXBOARD_STAGING_NETWORK: txboard-staging-test-network
+          GATEWAY_STAGING_ALLOWED_ORIGINS: https://staging.example.test
+        run: |
+          docker compose -f staging/compose.gateway.yaml config --quiet
+          ! docker compose -f staging/compose.gateway.yaml config | grep -Eq 'published:|host_port:'
       - name: Build production Docker image
         run: docker build -t txboard-gateway:phase1 .
       - name: Container boots with fixed upstream configuration
@@ -56,8 +63,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.23.2'
           cache: npm
