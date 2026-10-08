@@ -24,7 +24,9 @@ function success(c: GatewayContext, data: unknown, status: 200 | 201 = 200) {
   return c.json({ ok: true, data, meta: { version: VERSION, requestId: c.get('requestId') } }, status)
 }
 
-function failure(c: GatewayContext, code: string, message: string, status: 400 | 401 | 403 | 404 | 405 | 413 | 429 | 500 | 502 | 504) {
+type ErrorStatus = 400 | 401 | 403 | 404 | 405 | 413 | 422 | 429 | 500 | 502 | 503 | 504
+
+function failure(c: GatewayContext, code: string, message: string, status: ErrorStatus) {
   return c.json({ ok: false, error: { code, message }, meta: { version: VERSION, requestId: c.get('requestId') } }, status)
 }
 
@@ -138,7 +140,10 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
   app.notFound(c => failure(c, 'NOT_FOUND', 'Gateway route does not exist', 404))
   app.onError((error, c) => {
     if (error instanceof GatewayFailure) {
-      const status = error.status === 400 || error.status === 413 || error.status === 504 ? error.status : error.status === 401 ? 401 : error.status === 403 ? 403 : 502
+      // Preserve meaningful upstream 4xx/429 statuses; never turn backend
+      // rate-limit or validation errors into misleading gateway 502s.
+      const status = ([400, 401, 403, 404, 405, 413, 422, 429, 500, 502, 503, 504]
+        .includes(error.status) ? error.status : 502) as ErrorStatus
       return failure(c, error.code, error.message, status)
     }
     // Intentionally do not log request bodies, Authorization or upstream errors.
