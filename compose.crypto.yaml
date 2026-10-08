@@ -6,7 +6,11 @@ services:
       GATEWAY_HPKE_MODE: optional
       GATEWAY_HPKE_KEY_FILE: /run/secrets/gateway-hpke.json
     secrets:
-      - gateway-hpke
+      - source: gateway-hpke
+        target: gateway-hpke.json
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
     # Preview's anti-replay cache is process-local; do NOT scale this service.
 secrets:
   gateway-hpke:
