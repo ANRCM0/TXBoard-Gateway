@@ -192,7 +192,7 @@
 
 方案需要独立 ADR 和安全评审；评审不通过则保持 **HTTPS-only 模式**，不实施自制加密。
 
-借鉴 AirBuddy “前端看不到封装细节”的体验要求：主题通过 `@txboard/theme-sdk` 调用业务接口，由 SDK 处理可选协议；不要要求不同主题重复实现密文与路径映射，也不要承诺“加密就不被封锁”。详见 [AirBuddy 参考设计：加密取舍](./airbuddy-design-reference.md#2-借鉴点-a加密代理的主题无感体验--sdk-安全传输适配器)。
+借鉴 AirBuddy “前端看不到封装细节”的体验要求：主题通过 `@txboard/theme-sdk` 调用业务接口，由 SDK 处理可选协议；不要要求不同主题重复实现密文与路径映射，也不要承诺“加密就不被封锁”。详见 [AirBuddy 参考设计：加密取舍](./airbuddy-design-reference.md)。
 
 ### 4.2 候选协议边界
 
