@@ -15,6 +15,21 @@
 
 已合并的关键 PR：[合同安全 #4](https://github.com/ANRCM0/TXBoard-Gateway/pull/4) · [构建/E2E #5](https://github.com/ANRCM0/TXBoard-Gateway/pull/5) · [Docker/HPKE #6](https://github.com/ANRCM0/TXBoard-Gateway/pull/6) · [Redis/账户 #7](https://github.com/ANRCM0/TXBoard-Gateway/pull/7)。
 
+## 架构演进专项：模块化中间件（2026-10-09，设计已确定，代码待实施）
+
+**目标架构：** 一个 Hono Gateway 进程 + 不可跳过的全局安全基线 + 编译期声明式路由策略 + 按需 Bearer/HPKE/Zod + Redis 分布式安全状态。避免多个网关微服务串联；不开放运行时任意 JS 插件。设计与测试细节见 [middleware-architecture](./middleware-architecture.md)。
+
+| 工作包 | 对应任务 | 当前状态 | 退出条件 |
+| --- | --- | --- | --- |
+| PR-A 保兼容拆分 app/routes/adapters | GW-210/211 | **待开发** | v1 契约/状态码/SDK/默认开关不变，现有 CI 绿 |
+| PR-B 策略表与强制安全基线 | GW-212 | **待开发** | 非法配置、未知路径、未授权/敏感操作负例覆盖 |
+| PR-C 可信代理/双层限流/Redis 强化 | GW-213/215 | **待开发** | 可信 IP、重放、断连、误伤与多副本测试 |
+| PR-D 日志指标和 readiness | GW-214 | **待开发** | 零敏感字段泄漏、指标与故障告警演练 |
+| PR-E Luma 渐进接入与真实联调 | GW-216/217 | **待开发；真实联调按决策延期** | mock 与真实 Laravel Staging 分开记录，开关可回滚 |
+| 可选公开内容缓存 | GW-218 | **未启用** | 公开字段审计、TTL/失效和一致性测试 |
+
+可先实施 PR-A/B 等不依赖生产资源的兼容性重构；但**真实 Laravel/MySQL/Redis/CAPTCHA、可信代理、密码学与故障切换测试仍是生产阻断项**。架构提案和文档提交都不是已交付代码。
+
 ## 当前执行顺序
 
 1. 处理 P0 **可信代理、Redis 故障转移、密钥轮换/撤销、生产安全审查**。
