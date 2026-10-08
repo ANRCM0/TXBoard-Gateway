@@ -111,14 +111,27 @@ export async function upstreamRequest(
       await response.body?.cancel()
       throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream content type')
     }
-    const payload = await boundedJson(response.body, config.maxResponseBytes)
+    let payload: unknown
+    try {
+      payload = await boundedJson(response.body, config.maxResponseBytes)
+    } catch (error) {
+      if (error instanceof GatewayFailure && error.code === 'PAYLOAD_TOO_LARGE') {
+        throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Upstream response too large')
+      }
+      throw error
+    }
     const record = asRecord(payload)
     // Never swallow a TXBoard application-level error with HTTP 200.
     if (!response.ok || (typeof record.status === 'string' && record.status !== 'success')) {
       const status = response.status >= 400 ? response.status : 400
-      throw new GatewayFailure('UPSTREAM_ERROR', status, sanitizedMessage(record.message))
+      throw new GatewayFailure('UPSTREAM_ERROR', status, status >= 500 ? 'Upstream request failed' : sanitizedMessage(record.message))
     }
-    if (record.status === 'success') return record.data
+    if (record.status === 'success') {
+      if (!Object.hasOwn(record, 'data')) {
+        throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Invalid upstream success response')
+      }
+      return record.data
+    }
     // Legacy TXBoard endpoints may return {data, total} directly.
     return payload
   } catch (err) {
