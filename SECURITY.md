@@ -19,3 +19,14 @@ beyond pass-through, durable anti-replay, order write idempotency and payment sa
 These are prerequisites for higher-risk operations; this prototype does not waive them.
 
 **Before production:** validate Caddy/nginx origins, explicit CORS allowlist, limits at reverse proxy, trusted upstream URL, log collection, existing Laravel authentication / bot-defense policy, and smoke-test login/profile/theme/plan/order flows on the deployed version.
+
+## Redis replay protection
+
+Opt-in HPKE now *requires* Redis; Redis unavailability or loss of readiness
+returns 503 rather than accepting encrypted operations. It uses atomic
+`SET NX PX` and account-level throttles. Redis key hashing is not user
+anonymization and per-email limits are susceptible to targeted denial of
+service. If Redis loses unreplicated writes during failover, its replay window
+may also be weakened. TLS, Laravel rate limiting and CAPTCHA still apply.
+Registration/email-code remain disabled by default, and no financial writes
+are enabled.

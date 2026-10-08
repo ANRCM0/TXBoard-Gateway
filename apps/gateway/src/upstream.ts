@@ -5,6 +5,7 @@ export type GatewayFailureCode =
   | 'UPSTREAM_ERROR'
   | 'PAYLOAD_TOO_LARGE'
   | 'VALIDATION_ERROR'
+  | 'RATE_LIMITED'
 
 export class GatewayFailure extends Error {
   constructor(
@@ -28,6 +29,10 @@ const allowlistedPaths = {
   userSubscription: '/api/v1/user/getSubscribe',
   userPaymentMethods: '/api/v1/user/order/getPaymentMethod',
   userNotices: '/api/v1/user/notice/fetch',
+  userStats: '/api/v1/user/getStat',
+  userOrderStatus: '/api/v1/user/order/check',
+  register: '/api/v1/passport/auth/register',
+  sendEmailCode: '/api/v1/passport/comm/sendEmailVerify',
 } as const
 
 export type UpstreamOperation = keyof typeof allowlistedPaths
@@ -100,6 +105,9 @@ export async function upstreamRequest(
   if (operation === 'userOrders' && options.status !== undefined) {
     target.searchParams.set('status', String(options.status))
   }
+  if (operation === 'userOrderStatus' && options.tradeNo) {
+    target.searchParams.set('trade_no', options.tradeNo)
+  }
   if (operation === 'userOrderDetail' && options.tradeNo) {
     target.searchParams.set('trade_no', options.tradeNo)
   }
@@ -109,7 +117,8 @@ export async function upstreamRequest(
   }
   const headers = new Headers({ Accept: 'application/json' })
   if (options.auth) headers.set('Authorization', options.auth)
-  const method = operation === 'login' ? 'POST' : 'GET'
+  const method = operation === 'login' || operation === 'register' || operation === 'sendEmailCode'
+    ? 'POST' : 'GET'
   if (method === 'POST') headers.set('Content-Type', 'application/json')
   try {
     const response = await fetcher(target.toString(), {

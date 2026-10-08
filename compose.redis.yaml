@@ -1,0 +1,30 @@
+# Optional isolated Redis for development / single-host deployments.
+# Compose overlays: compose.yaml + compose.crypto.yaml + compose.redis.yaml
+# No published Redis ports. For existing 1Panel Redis use your trusted private URL instead.
+services:
+  gateway:
+    environment:
+      GATEWAY_REDIS_URL: redis://gateway-redis:6379
+    networks:
+      - private-proxy
+      - safety-redis
+  gateway-redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'always', '--maxmemory-policy', 'noeviction']
+    volumes:
+      - gateway-redis-data:/data
+    networks:
+      - safety-redis
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+networks:
+  safety-redis:
+    internal: true
+volumes:
+  gateway-redis-data:

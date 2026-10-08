@@ -3,7 +3,8 @@ import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import type { GatewayConfig } from './env.js'
 import { asRecord, boundedJson, GatewayFailure, upstreamRequest, type UpstreamFetcher } from './upstream.js'
-import type { CryptoService, SealedRequest } from './crypto.js'
+import type { CryptoService, SealedRequest, CryptoOperation } from './crypto.js'
+import type { AccountLimiter } from './redis-security.js'
 
 type Bindings = { Bindings: Record<string, never>; Variables: { requestId: string } }
 type GatewayContext = Context<Bindings, any, any>
@@ -39,6 +40,21 @@ const sealedRequestSchema = z.strictObject({
   enc: z.string().min(40).max(500),
   ct: z.string().min(24).max(20000),
 })
+const captchaFields = {
+  turnstile_token: z.string().max(4096).optional(),
+  recaptcha_v3_token: z.string().max(4096).optional(),
+  recaptcha_data: z.string().max(4096).optional(),
+}
+const registerSchema = z.strictObject({
+  email: z.email().max(254),
+  password: z.string().min(8).max(1024),
+  invite_code: z.string().max(128).optional(),
+  email_code: z.string().regex(/^\d{6}$/).optional(),
+  ...captchaFields,
+})
+const emailCodeSchema = z.strictObject({ email: z.email().max(254), ...captchaFields })
+const statsSchema = z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative(), z.number().int().nonnegative()])
+const orderStatusSchema = z.number().int().min(0).max(3)
 const loginResultSchema = z.object({
   auth_data: z.string().regex(/^Bearer \S{8,}$/),
   is_admin: z.union([z.boolean(), z.number().int()]).optional(),
@@ -119,7 +135,13 @@ async function readLoginRequest(request: Request, maxBytes: number): Promise<unk
   }
 }
 
-export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher = fetch, crypto?: CryptoService) {
+export function createGatewayApp(
+  config: GatewayConfig, fetcher: UpstreamFetcher = fetch, crypto?: CryptoService,
+  policy: { accountWorkflows?: boolean; limiter?: AccountLimiter } = {},
+) {
+  if (policy.accountWorkflows && (!crypto || !policy.limiter)) {
+    throw new Error('Account workflows require both encryption and Redis rate limiter')
+  }
   const app = new Hono<Bindings>()
 
   app.use('*', async (c, next) => {
@@ -162,7 +184,9 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
       capabilities: [
         'auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config',
         'user.subscription.summary', 'orders.detail', 'payments.methods', 'notices.list',
+        'dashboard.stats', 'orders.status',
         ...(crypto ? ['auth.login.encrypted'] : []),
+        ...(policy.accountWorkflows ? ['auth.register.encrypted', 'auth.email-code.encrypted'] : []),
       ],
     })
   })
@@ -174,23 +198,45 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
   async function runLogin(c: GatewayContext, raw: unknown) {
     const checked = loginSchema.safeParse(raw)
     if (!checked.success) return failure(c, 'VALIDATION_ERROR', 'Invalid login data', 400)
-    // Laravel is the authority for CAPTCHA, credentials and user session.
+    // Redis account-level throttle protects the Gateway entry point. Laravel
+    // remains the authority for password and CAPTCHA and also needs own limits.
+    if (policy.limiter) await policy.limiter.check('login', checked.data.email)
     return success(c, validated(loginResultSchema, await upstreamRequest(config, fetcher, 'login', { body: checked.data })))
   }
   app.post(`${PREFIX}/auth/login`, async c =>
     runLogin(c, await readLoginRequest(c.req.raw, config.maxRequestBytes)))
 
-  // Experimental opt-in encrypted login: cannot be used without a persisted
-  // Docker secret. Not a replacement for TLS or distributed anti-replay.
   if (crypto) {
     app.get(`${PREFIX}/crypto/key`, c => success(c, crypto.publicKey()))
-    app.post(`${PREFIX}/secure/auth/login`, async c => {
-      const raw = await readLoginRequest(c.req.raw, config.maxRequestBytes)
-      const checked = sealedRequestSchema.safeParse(raw)
-      if (!checked.success) return failure(c, 'VALIDATION_ERROR', 'Invalid encrypted request', 400)
-      const data = await crypto.open(checked.data as SealedRequest)
-      return runLogin(c, data)
-    })
+    const secure = (operation: CryptoOperation, process: (c: GatewayContext, data: unknown) => Promise<Response>) =>
+      async (c: GatewayContext) => {
+        const raw = await readLoginRequest(c.req.raw, config.maxRequestBytes)
+        const checked = sealedRequestSchema.safeParse(raw)
+        if (!checked.success) return failure(c, 'VALIDATION_ERROR', 'Invalid encrypted request', 400)
+        // Operation-specific AEAD AAD: ciphertext cannot be replayed to
+        // registration or email endpoints, even with the same key and nonce.
+        const data = await crypto.open(checked.data as SealedRequest, operation)
+        return process(c, data)
+      }
+    app.post(`${PREFIX}/secure/auth/login`, secure('login', runLogin))
+    if (policy.accountWorkflows && policy.limiter) {
+      const limiter = policy.limiter
+      app.post(`${PREFIX}/secure/auth/register`, secure('register', async (c, data) => {
+        const parsed = registerSchema.safeParse(data)
+        if (!parsed.success) return failure(c, 'VALIDATION_ERROR', 'Invalid registration data', 400)
+        await limiter.check('register', parsed.data.email)
+        return success(c, validated(loginResultSchema,
+          await upstreamRequest(config, fetcher, 'register', { body: parsed.data })))
+      }))
+      app.post(`${PREFIX}/secure/auth/email-code`, secure('email-code', async (c, data) => {
+        const parsed = emailCodeSchema.safeParse(data)
+        if (!parsed.success) return failure(c, 'VALIDATION_ERROR', 'Invalid verification request', 400)
+        await limiter.check('email-code', parsed.data.email)
+        const result = await upstreamRequest(config, fetcher, 'sendEmailCode', { body: parsed.data })
+        if (result !== true) throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
+        return success(c, { sent: true })
+      }))
+    }
   }
 
   app.get(`${PREFIX}/user/profile`, async c => {
@@ -269,6 +315,24 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
     }
     return success(c, validated(noticePageSchema, await upstreamRequest(config, fetcher, 'userNotices',
       { auth, current: Number(current), pageSize: Number(pageSize) })))
+  })
+
+  app.get(`${PREFIX}/dashboard/stats`, async c => {
+    const auth = authBearer(c)
+    if (!auth) return failure(c, 'UNAUTHORIZED', 'Bearer token required', 401)
+    const counts = validated(statsSchema, await upstreamRequest(config, fetcher, 'userStats', { auth }))
+    return success(c, { unpaidOrders: counts[0], openTickets: counts[1], invitedUsers: counts[2] })
+  })
+  app.get(`${PREFIX}/orders/:tradeNo/status`, async c => {
+    const auth = authBearer(c)
+    if (!auth) return failure(c, 'UNAUTHORIZED', 'Bearer token required', 401)
+    const tradeNo = c.req.param('tradeNo')
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(tradeNo)) {
+      return failure(c, 'VALIDATION_ERROR', 'Invalid order identifier', 400)
+    }
+    const status = validated(orderStatusSchema,
+      await upstreamRequest(config, fetcher, 'userOrderStatus', { auth, tradeNo }))
+    return success(c, { tradeNo, status })
   })
 
   app.post(`${PREFIX}/orders`, c =>

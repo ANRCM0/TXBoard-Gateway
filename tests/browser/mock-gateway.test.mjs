@@ -60,26 +60,35 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
       })
     } else if (path === '/api/v1/guest/plan/fetch') {
       result = upstreamEnvelope([{ id: 1, name: 'Monthly', month_price: 1200 }])
-    } else if (path === '/api/v1/passport/auth/login' && req.method === 'POST') {
+    } else if ([
+      '/api/v1/passport/auth/login', '/api/v1/passport/auth/register',
+      '/api/v1/passport/comm/sendEmailVerify',
+    ].includes(path) && req.method === 'POST') {
       let data = ''
       for await (const chunk of req) data += chunk
       const submitted = JSON.parse(data)
-      if (submitted.email !== email || submitted.password !== password || submitted.turnstile_token !== 'fixture-captcha') {
+      if (submitted.email !== email || submitted.turnstile_token !== 'fixture-captcha'
+        || (path !== '/api/v1/passport/comm/sendEmailVerify' && submitted.password !== password)) {
         status = 422
         result = { status: 'fail', message: 'Invalid fixture test credentials' }
       } else {
-        result = upstreamEnvelope({ auth_data: TEST_BEARER, is_admin: false, secure_path: 'private-admin-route', token: 'legacy-token' })
+        result = upstreamEnvelope(path === '/api/v1/passport/comm/sendEmailVerify' ? true
+          : { auth_data: TEST_BEARER, is_admin: false, secure_path: 'private-admin-route', token: 'legacy-token' })
       }
     } else if ([
       '/api/v1/user/info', '/api/v1/user/order/fetch', '/api/v1/user/getSubscribe',
       '/api/v1/user/order/detail', '/api/v1/user/order/getPaymentMethod',
-      '/api/v1/user/notice/fetch',
+      '/api/v1/user/notice/fetch', '/api/v1/user/getStat', '/api/v1/user/order/check',
     ].includes(path)) {
       if (req.headers.authorization !== TEST_BEARER) {
         status = 401
         result = { status: 'fail', message: 'Expired fixture session' }
       } else if (path.endsWith('/info')) {
         result = upstreamEnvelope({ email, balance: 1000 })
+      } else if (path.endsWith('/getStat')) {
+        result = upstreamEnvelope([2, 1, 7])
+      } else if (path.endsWith('/order/check')) {
+        result = upstreamEnvelope(0)
       } else if (path.endsWith('/getSubscribe')) {
         result = upstreamEnvelope({
           plan_id: 1, plan: { name: 'Fixture Pro' }, u: 10, d: 20,
@@ -136,6 +145,8 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
       GATEWAY_ALLOWED_ORIGINS: 'http://127.0.0.1:' + frontend.port,
       GATEWAY_HPKE_MODE: 'optional',
       GATEWAY_HPKE_KEY_FILE: keyFile,
+      GATEWAY_REDIS_URL: process.env.GATEWAY_TEST_REDIS_URL || 'redis://127.0.0.1:16379',
+      GATEWAY_ACCOUNT_WORKFLOWS_ENABLED: 'true',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -183,6 +194,10 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
       baseURL: 'http://127.0.0.1:' + gatewayPort + '/gateway/v1',
       encryptedLogin: true,
     })
+    const stats = await api.dashboard.stats()
+    const orderStatus = await api.orders.status('fixture-order')
+    const code = await encryptedApi.auth.sendEmailCode({ email, turnstile_token: 'fixture-captcha' })
+    const registered = await encryptedApi.auth.register({ email, password, turnstile_token: 'fixture-captcha' })
     const protectedLogin = await encryptedApi.auth.login({
       email, password, turnstile_token: 'fixture-captcha',
     })
@@ -214,6 +229,10 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
       leakedPaymentKey: JSON.stringify(payments).includes('private-payment-key'),
       noticeTotal: notices.total,
       encryptedLoginKeys: Object.keys(protectedLogin).sort(),
+      registrationKeys: Object.keys(registered).sort(),
+      codeSent: code.sent,
+      stats,
+      orderStatus,
       expiredStatus,
       rejectedStatus,
       persistedAuth: Object.keys(localStorage).some(k => /auth|token/i.test(k)),
@@ -233,6 +252,10 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
   assert.equal(result.leakedPaymentKey, false)
   assert.equal(result.noticeTotal, 1)
   assert.deepEqual(result.encryptedLoginKeys, ['auth_data', 'is_admin'])
+  assert.deepEqual(result.registrationKeys, ['auth_data', 'is_admin'])
+  assert.equal(result.codeSent, true)
+  assert.deepEqual(result.stats, { unpaidOrders: 2, openTickets: 1, invitedUsers: 7 })
+  assert.deepEqual(result.orderStatus, { tradeNo: 'fixture-order', status: 0 })
   assert.ok(encryptedRequestBody.includes('"kid"'))
   assert.ok(encryptedRequestBody.includes('"ct"'))
   assert.ok(!encryptedRequestBody.includes(password))

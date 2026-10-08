@@ -45,6 +45,10 @@ export type PaymentMethod = {
 }
 export type Notice = { id: number; [field: string]: unknown }
 export type NoticePage = { data: Notice[]; total: number }
+export type RegistrationPayload = LoginPayload & { invite_code?: string }
+export type EmailCodePayload = Pick<LoginPayload, 'email' | 'turnstile_token' | 'recaptcha_v3_token' | 'recaptcha_data'>
+export type DashboardStats = { unpaidOrders: number; openTickets: number; invitedUsers: number }
+export type OrderStatus = { tradeNo: string; status: number }
 export type UserAuth = { auth_data: string; is_admin?: boolean | number }
 export type UserProfile = {
   email: string
@@ -152,6 +156,13 @@ export function createTXBoardClient(options: TXBoardClientOptions = {}) {
     return result.data as T
   }
 
+  async function secureInvoke<T>(operation: 'register' | 'email-code', payload: unknown): Promise<T> {
+    const discovery = await invoke<import('./crypto.js').KeyDiscovery>('/crypto/key')
+    const { encryptForOperation } = await import('./crypto.js')
+    const sealed = await encryptForOperation(discovery, payload, operation)
+    return invoke<T>(`/secure/auth/${operation}`, { method: 'POST', body: sealed })
+  }
+
   async function optionsGetToken() {
     return options.getToken ? options.getToken() : undefined
   }
@@ -165,6 +176,9 @@ export function createTXBoardClient(options: TXBoardClientOptions = {}) {
       list: () => invoke<Plan[]>('/plans'),
     },
     auth: {
+      /** Account writes are encrypted-only and require opt-in Redis+HPKE Gateway. */
+      register: (payload: RegistrationPayload) => secureInvoke<UserAuth>('register', payload),
+      sendEmailCode: (payload: EmailCodePayload) => secureInvoke<{ sent: boolean }>('email-code', payload),
       login: async (payload: LoginPayload) => {
         if (!options.encryptedLogin) return invoke<UserAuth>('/auth/login', { method: 'POST', body: payload })
         const discovery = await invoke<import('./crypto.js').KeyDiscovery>('/crypto/key')
@@ -177,7 +191,9 @@ export function createTXBoardClient(options: TXBoardClientOptions = {}) {
       profile: () => invoke<UserProfile>('/user/profile', { protected: true }),
       subscription: () => invoke<SubscriptionSummary>('/user/subscription/summary', { protected: true }),
     },
+    dashboard: { stats: () => invoke<DashboardStats>('/dashboard/stats', { protected: true }) },
     orders: {
+      status: (tradeNo: string) => invoke<OrderStatus>(`/orders/${encodeURIComponent(tradeNo)}/status`, { protected: true }),
       list: (query: { status?: 0 | 1 | 2 | 3 } = {}) => invoke<Order[]>(
         query.status === undefined ? '/orders' : `/orders?status=${query.status}`,
         { protected: true },

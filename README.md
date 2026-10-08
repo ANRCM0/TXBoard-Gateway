@@ -117,3 +117,12 @@ Additional fixed user-owned read endpoints: subscription summary, order detail,
 payment method display catalog (authenticated), and notices.
 No checkout/order/payment writes are exposed.
 **Real Laravel/MySQL/Redis acceptance and a third-party crypto review remain deferred.**
+
+## Redis + account workflow preview
+
+Current app preview adds `dashboard.stats()`, `orders.status(tradeNo)`,
+`auth.register(payload)` and `auth.sendEmailCode(payload)`. Both auth writes
+are **HPKE-only**, default disabled and require a private Redis safety store.
+See [Docker + Redis workflow guide](./docs/app-crypto-preview.md).
+Redis preserves nonce uniqueness across Gateway containers while healthy;
+do not treat this as payment idempotency or a substitute for Laravel controls.
