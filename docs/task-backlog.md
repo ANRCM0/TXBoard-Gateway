@@ -1,6 +1,6 @@
 # TXBoard Gateway 任务清单与验收矩阵
 
-> 与 [完整开发方案](./implementation-plan.md) 配套，所有未勾选项均为**待开发计划**。  
+> 与 [完整开发方案](./implementation-plan.md) 配套，本表任务均为**待开发计划**，完成后须有可追溯的 PR 和验证记录。  
 > 日期基线：2026-10-08；采用任务编号 `GW-1xx` ～ `GW-5xx`，可以直接转成 GitHub Issues。  
 > 优先级：P0 = 不能跳过的生产/安全前置；P1 = 阶段核心；P2 = 可随后优化。  
 > 责任仓库：`GW` = `ANRCM0/TXBoard-Gateway`；`TX` = `ANRCM0/TXBoard`；`DEP` = `ANRCM0/TXBoard-Deploy`。
