@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import type { GatewayConfig } from './env.js'
 import { asRecord, boundedJson, GatewayFailure, upstreamRequest, type UpstreamFetcher } from './upstream.js'
 
-type Bindings = { Variables: { requestId: string } }
-type GatewayContext = Parameters<Parameters<Hono<Bindings>['use']>[1]>[0]
+type Bindings = { Bindings: Record<string, never>; Variables: { requestId: string } }
+type GatewayContext = Context<Bindings, any, any>
 
 const VERSION = '1'
 const PREFIX = '/gateway/v1'
