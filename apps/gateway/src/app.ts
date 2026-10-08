@@ -5,6 +5,20 @@ import type { GatewayConfig } from './env.js'
 import { asRecord, boundedJson, GatewayFailure, upstreamRequest, type UpstreamFetcher } from './upstream.js'
 import type { CryptoService, SealedRequest, CryptoOperation } from './crypto.js'
 import type { AccountLimiter } from './redis-security.js'
+import { normalizeLoginEmail, type LoginAdmission, type LoginProtection } from './login-protection.js'
+import {
+  extractSubject,
+  resolveRoutePolicy,
+  RedisRateLimiter,
+  type RateLimiterStats,
+} from './rate-limiter.js'
+import {
+  compileIpAllowlist,
+  evaluateRequest,
+  hostMatchesAllowlist,
+  sanitizeForwardedHeaders,
+  type CompiledIpAllowlist,
+} from './trusted-proxy.js'
 
 type Bindings = { Bindings: Record<string, never>; Variables: { requestId: string } }
 type GatewayContext = Context<Bindings, any, any>
@@ -94,11 +108,23 @@ function publicCaptcha(data: Record<string, unknown>) {
 }
 
 
+/** GW-203: the Gateway never validates CAPTCHA tokens — it only checks whether
+ * a standard challenge field was submitted, then forwards it verbatim for
+ * Laravel CaptchaService to verify. An empty or whitespace-only token does not
+ * satisfy the challenge. */
+function hasCaptchaField(data: Record<string, unknown>): boolean {
+  for (const key of ['turnstile_token', 'recaptcha_v3_token', 'recaptcha_data']) {
+    const value = data[key]
+    if (typeof value === 'string' && value.trim()) return true
+  }
+  return false
+}
+
 function success(c: GatewayContext, data: unknown, status: 200 | 201 = 200) {
   return c.json({ ok: true, data, meta: { version: VERSION, requestId: c.get('requestId') } }, status)
 }
 
-type ErrorStatus = 400 | 401 | 409 | 403 | 404 | 405 | 413 | 422 | 429 | 500 | 502 | 503 | 504
+type ErrorStatus = 400 | 401 | 409 | 403 | 404 | 405 | 413 | 422 | 428 | 429 | 500 | 502 | 503 | 504
 
 function failure(c: GatewayContext, code: string, message: string, status: ErrorStatus) {
   return c.json({ ok: false, error: { code, message }, meta: { version: VERSION, requestId: c.get('requestId') } }, status)
@@ -109,6 +135,49 @@ function authBearer(c: GatewayContext): string | null {
   if (!/^Bearer [^\s]{8,4096}$/.test(value)) return null
   return value
 }
+
+/**
+ * GW-204 Host validation. Only a bare hostname (optionally with port) is
+ * accepted; CR/LF, spaces, credentials, slashes, query and fragment are
+ * rejected so the value can never smuggle a second virtual host upstream.
+ */
+export function safeHostHeader(value: string): string | null {
+  const v = value.trim().toLowerCase()
+  if (!v || v.length > 253) return null
+  // Only host characters may appear; CR/LF/space/credentials/query/fragment are rejected.
+  if (!/^[a-z0-9.[\]:-]+$/.test(v)) return null
+  const host = v.replace(/:\d{1,5}$/, '')
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(host) && !/^\[[0-9a-f:]+\]$/.test(host)) return null
+  if (host.startsWith('.') || host.endsWith('.') || host.includes('..')) return null
+  if (host.split('.').some(label => label.length > 63)) return null
+  return host
+}
+
+export type GatewayPolicy = {
+  accountWorkflows?: boolean
+  limiter?: AccountLimiter
+  /** GW-204: comma-delimited ingress IPs/CIDRs whose proxy headers may be trusted. */
+  trustedIngress?: string
+  /** GW-204: comma-delimited exact Host values (or *.suffix wildcards). Empty = no check. */
+  allowedHosts?: string
+  /** GW-202: Redis sliding-window route limiter (IP + account dual dimension). */
+  rateLimiter?: RedisRateLimiter
+  /** GW-202: receives limiter decisions (429s, degraded runs) for metrics/alerts. */
+  onRateEvent?: (event: {
+    policyId: string
+    requestId: string
+    limited: boolean
+    degraded: boolean
+    retryAfterHeader: number
+    ipCount: number
+    subjectCount: number
+  }) => void
+  /** GW-203: login anti-credential-stuffing (account + IP dual dimension). */
+  loginProtection?: LoginProtection
+}
+
+export type GatewayRateObserver = NonNullable<GatewayPolicy['onRateEvent']>
+
 
 function publicTheme(data: unknown) {
   const config = asRecord(data)
@@ -137,19 +206,105 @@ async function readLoginRequest(request: Request, maxBytes: number): Promise<unk
 
 export function createGatewayApp(
   config: GatewayConfig, fetcher: UpstreamFetcher = fetch, crypto?: CryptoService,
-  policy: { accountWorkflows?: boolean; limiter?: AccountLimiter } = {},
+  policy: GatewayPolicy = {},
 ) {
   if (policy.accountWorkflows && (!crypto || !policy.limiter)) {
     throw new Error('Account workflows require both encryption and Redis rate limiter')
   }
+  const allowlist: CompiledIpAllowlist = compileIpAllowlist(policy.trustedIngress || '')
+  const allowedHosts = (policy.allowedHosts || '').split(',').map(s => s.trim()).filter(Boolean)
   const app = new Hono<Bindings>()
 
+  // GW-204 layer 1: forge-proof client identity and hardened boundary headers.
+  // A request that claims to be proxied but comes from a peer outside the
+  // ingress allowlist is rejected here, before any route handler can read the
+  // spoofed X-Forwarded-For / X-Real-IP values.
   app.use('*', async (c, next) => {
     c.set('requestId', randomUUID())
     c.header('X-Request-Id', c.get('requestId'))
     c.header('Cache-Control', 'no-store')
+    c.header('X-Content-Type-Options', 'nosniff')
+    c.header('Referrer-Policy', 'no-referrer')
+    c.header('Cross-Origin-Resource-Policy', 'same-origin')
+    c.header('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'")
+    c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+
+    const raw = c.req.raw as Request & { __peerIp?: string }
+    const peer = raw.__peerIp ?? '0.0.0.0'
+    const verdict = evaluateRequest(peer, raw.headers, allowlist)
+    if (verdict.reason === 'forged_headers') {
+      return failure(c, 'FORBIDDEN', 'Proxy headers are not accepted from this source', 403)
+    }
+    // Downstream code (rate limiting, audit logs) reads only this sanitized value.
+    Object.defineProperty(raw, '__clientIp', { value: verdict.clientIp, enumerable: false })
+
+    const hostHeader = c.req.header('Host')
+    if (hostHeader !== undefined) {
+      const host = safeHostHeader(hostHeader)
+      if (!host || (allowedHosts.length > 0 && !(await hostMatchesAllowlist(host, allowedHosts)))) {
+        return failure(c, 'BAD_HOST', 'Host header is not allowed', 403)
+      }
+    }
     await next()
   })
+
+  // GW-202 layer: route-level sliding-window limiter (Redis, IP + subject).
+  // Runs after the GW-204 trust verdict so the client IP can never be forged,
+  // and before route handlers so a limited request never reaches upstream.
+  if (policy.rateLimiter) {
+    const limiter = policy.rateLimiter
+    const observer = policy.onRateEvent
+    app.use(`${PREFIX}/*`, async (c, next) => {
+      const route = resolveRoutePolicy(c.req.path, c.req.method)
+      if (!route) return next()
+      const clientIp = (c.req.raw as Request & { __clientIp?: string }).__clientIp ?? '0.0.0.0'
+      const requestId = c.get('requestId')
+
+      // Body is only needed for email-subject routes; clone to avoid consuming.
+      let bodyEmail: string | undefined
+      if (route.subjectFrom === 'email' && c.req.method === 'POST') {
+        try {
+          const text = await c.req.raw.clone().text()
+          const parsed = JSON.parse(text) as unknown
+          if (parsed && typeof parsed === 'object') {
+            // For encrypted envelopes the subject is inside the sealed payload;
+            // the plaintext is unavailable pre-crypto, so fall back to IP-only.
+            bodyEmail = typeof (parsed as { email?: unknown }).email === 'string'
+              ? (parsed as { email: string }).email : undefined
+          }
+        } catch {
+          // Unparseable body: validation errors later; limit by IP only.
+        }
+      }
+      const subject = extractSubject(route, {
+        authorization: c.req.header('Authorization'),
+        bodyEmail,
+      })
+
+      try {
+        const decision = await limiter.check({ policy: route, ip: clientIp, subject })
+        if (!decision.allowed) {
+          c.header('Retry-After', String(decision.retryAfterHeader))
+          observer?.({ policyId: route.id, requestId, limited: true, degraded: false,
+            retryAfterHeader: decision.retryAfterHeader,
+            ipCount: decision.ipCount, subjectCount: decision.subjectCount })
+          return failure(c, 'RATE_LIMITED', 'Too many requests', 429)
+        }
+        if (decision.degraded) {
+          observer?.({ policyId: route.id, requestId, limited: false, degraded: true,
+            retryAfterHeader: 0,
+            ipCount: decision.ipCount, subjectCount: decision.subjectCount })
+        }
+      } catch (error) {
+        if (error instanceof GatewayFailure) {
+          // Fail-closed routes surface 503 (never silently unlimited).
+          return failure(c, error.code, error.message, error.status as ErrorStatus)
+        }
+        return failure(c, 'INTERNAL_ERROR', 'Gateway request failed', 500)
+      }
+      return next()
+    })
+  }
 
   // Exact-origin CORS; never reflect arbitrary origins or issue credential cookies.
   app.use(`${PREFIX}/*`, async (c, next) => {
@@ -162,6 +317,8 @@ export function createGatewayApp(
       c.header('Vary', 'Origin')
       c.header('Access-Control-Allow-Headers', 'Authorization, Content-Type')
       c.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      c.header('Access-Control-Allow-Credentials', 'false')
+      c.header('Access-Control-Expose-Headers', 'X-Request-Id')
       c.header('Access-Control-Max-Age', '600')
     }
     if (c.req.method === 'OPTIONS') return c.body(null, 204)
@@ -200,8 +357,54 @@ export function createGatewayApp(
     if (!checked.success) return failure(c, 'VALIDATION_ERROR', 'Invalid login data', 400)
     // Redis account-level throttle protects the Gateway entry point. Laravel
     // remains the authority for password and CAPTCHA and also needs own limits.
-    if (policy.limiter) await policy.limiter.check('login', checked.data.email)
-    return success(c, validated(loginResultSchema, await upstreamRequest(config, fetcher, 'login', { body: checked.data })))
+    // clientIp is the GW-204 sanitized address, never a client-supplied header.
+    const clientIp = (c.req.raw as Request & { __clientIp?: string }).__clientIp
+    if (policy.limiter) await policy.limiter.check('login', checked.data.email, clientIp)
+
+    // GW-203: outcome-driven anti-credential-stuffing. The verdict is decided
+    // on the SUBMITTED email and the sanitized source IP only — never on
+    // whether the account exists — so existing and unknown accounts receive
+    // byte-identical statuses, codes and Retry-After headers at every step.
+    const protection = policy.loginProtection
+    const email = normalizeLoginEmail(checked.data.email)
+    if (protection) {
+      let verdict: LoginAdmission
+      try {
+        verdict = await protection.admit(email, clientIp)
+      } catch {
+        // Fail closed: without the safety store, no login attempt may reach
+        // Laravel. This mirrors the replay/rate-limit failure posture.
+        return failure(c, 'UPSTREAM_UNAVAILABLE', 'Login protection unavailable', 503)
+      }
+      if (verdict.verdict === 'locked') {
+        c.header('Retry-After', String(Math.ceil(verdict.retryAfterMs / 1000)))
+        return failure(c, 'RATE_LIMITED', 'Too many requests', 429)
+      }
+      if (verdict.verdict === 'captcha' && !hasCaptchaField(checked.data)) {
+        return failure(c, 'CAPTCHA_REQUIRED', 'Verification required to continue', 428)
+      }
+    }
+
+    let result: unknown
+    try {
+      result = await upstreamRequest(config, fetcher, 'login', { body: checked.data })
+    } catch (error) {
+      // A genuine upstream rejection advances the stuffing counters. Token
+      // validation failures (400/403/422) are not password attempts: they must
+      // not burn the victim's account budget or lock a legitimate user out.
+      if (protection && error instanceof GatewayFailure
+        && (error.status === 401 || error.status === 429)) {
+        try { await protection.recordFailure(email, clientIp) } catch { /* logged elsewhere */ }
+      }
+      throw error
+    }
+    // A real success clears the account dimension. The IP dimension is
+    // intentionally kept: one legitimate login must not launder the stuffing
+    // counters of a shared or rotating source address.
+    if (protection) {
+      try { await protection.recordSuccess(email) } catch { /* non-fatal */ }
+    }
+    return success(c, validated(loginResultSchema, result))
   }
   app.post(`${PREFIX}/auth/login`, async c =>
     runLogin(c, await readLoginRequest(c.req.raw, config.maxRequestBytes)))
@@ -224,14 +427,14 @@ export function createGatewayApp(
       app.post(`${PREFIX}/secure/auth/register`, secure('register', async (c, data) => {
         const parsed = registerSchema.safeParse(data)
         if (!parsed.success) return failure(c, 'VALIDATION_ERROR', 'Invalid registration data', 400)
-        await limiter.check('register', parsed.data.email)
+        await limiter.check('register', parsed.data.email, (c.req.raw as any).__clientIp)
         return success(c, validated(loginResultSchema,
           await upstreamRequest(config, fetcher, 'register', { body: parsed.data })))
       }))
       app.post(`${PREFIX}/secure/auth/email-code`, secure('email-code', async (c, data) => {
         const parsed = emailCodeSchema.safeParse(data)
         if (!parsed.success) return failure(c, 'VALIDATION_ERROR', 'Invalid verification request', 400)
-        await limiter.check('email-code', parsed.data.email)
+        await limiter.check('email-code', parsed.data.email, (c.req.raw as any).__clientIp)
         const result = await upstreamRequest(config, fetcher, 'sendEmailCode', { body: parsed.data })
         if (result !== true) throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
         return success(c, { sent: true })
@@ -343,7 +546,7 @@ export function createGatewayApp(
     if (error instanceof GatewayFailure) {
       // Preserve meaningful upstream 4xx/429 statuses; never turn backend
       // rate-limit or validation errors into misleading gateway 502s.
-      const status = ([400, 401, 403, 404, 405, 409, 413, 422, 429, 500, 502, 503, 504]
+      const status = ([400, 401, 403, 404, 405, 409, 413, 422, 428, 429, 500, 502, 503, 504]
         .includes(error.status) ? error.status : 502) as ErrorStatus
       return failure(c, error.code, error.message, status)
     }

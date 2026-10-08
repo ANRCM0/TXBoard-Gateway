@@ -6,6 +6,8 @@ export type GatewayFailureCode =
   | 'PAYLOAD_TOO_LARGE'
   | 'VALIDATION_ERROR'
   | 'RATE_LIMITED'
+  /** GW-203: upstream authentication is possible but a CAPTCHA must be satisfied. */
+  | 'CAPTCHA_REQUIRED'
 
 export class GatewayFailure extends Error {
   constructor(
@@ -120,8 +122,13 @@ export async function upstreamRequest(
   const method = operation === 'login' || operation === 'register' || operation === 'sendEmailCode'
     ? 'POST' : 'GET'
   if (method === 'POST') headers.set('Content-Type', 'application/json')
+  // GW-204: pin the Host we send and refuse any response that was not served
+  // from the configured origin. redirect:'manual' stops follow-through; the
+  // response.url check catches a proxy that rewrote the effective URL, and the
+  // 3xx status check covers Location-only redirects.
+  const finalUrl = target.toString()
   try {
-    const response = await fetcher(target.toString(), {
+    const response = await fetcher(finalUrl, {
       method,
       headers,
       body: method === 'POST' ? JSON.stringify(options.body) : undefined,
@@ -131,6 +138,14 @@ export async function upstreamRequest(
     })
     if (response.status >= 300 && response.status < 400) {
       throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream redirect')
+    }
+    // A redirect that was followed despite redirect:'manual' (custom fetcher,
+    // undici retry, DNS-rebinding proxy) would land on a different origin.
+    if (response.url) {
+      const landed = new URL(response.url)
+      if (landed.origin !== target.origin) {
+        throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Upstream response origin mismatch')
+      }
     }
     const contentLength = response.headers.get('content-length')
     if (contentLength && Number(contentLength) > config.maxResponseBytes) {

@@ -4,7 +4,7 @@ import { GatewayFailure } from './upstream.js'
 import type { ReplayStore } from './crypto.js'
 
 export type AccountAction = 'login' | 'register' | 'email-code'
-export interface AccountLimiter { check(action: AccountAction, email: string): Promise<void> }
+export interface AccountLimiter { check(action: AccountAction, email: string, clientIp?: string): Promise<void> }
 
 const policies: Record<AccountAction, { limit: number; ms: number }> = {
   login: { limit: 8, ms: 60_000 },
@@ -56,7 +56,7 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
       throw new GatewayFailure('UPSTREAM_UNAVAILABLE', 503, 'Redis safety store unavailable')
     }
   }
-  async check(action: AccountAction, email: string): Promise<void> {
+  async check(action: AccountAction, email: string, clientIp?: string): Promise<void> {
     this.ready()
     const policy = policies[action]
     const digest = createHash('sha256').update(email.trim().toLowerCase()).digest('hex')
@@ -74,6 +74,29 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
     }
     if (used > policy.limit) {
       throw new GatewayFailure('RATE_LIMITED', 429, 'Too many requests')
+    }
+    // GW-204: per-source cap on top of the per-account cap. The key is a hash of
+    // the sanitized client IP (never the raw header), so credential stuffing from
+    // one host cannot spread across many accounts, and rotating IPs cannot spread
+    // a single account's budget. clientIp is advisory: absence skips this check.
+    if (clientIp) {
+      const ipDigest = createHash('sha256').update(clientIp).digest('hex')
+      const ipKey = 'txbgw:v1:rateip:' + action + ':' + ipDigest
+      let ipUsed: unknown
+      try {
+        ipUsed = await this.client.eval(RATE_LUA, {
+          keys: [ipKey], arguments: [String(policy.ms)],
+        })
+      } catch {
+        throw new GatewayFailure('UPSTREAM_UNAVAILABLE', 503, 'Redis safety store unavailable')
+      }
+      if (typeof ipUsed !== 'number' || !Number.isSafeInteger(ipUsed)) {
+        throw new GatewayFailure('UPSTREAM_UNAVAILABLE', 503, 'Redis safety store unavailable')
+      }
+      const ipPolicy: Record<AccountAction, number> = { login: 30, register: 10, 'email-code': 6 }
+      if (ipUsed > ipPolicy[action]) {
+        throw new GatewayFailure('RATE_LIMITED', 429, 'Too many requests')
+      }
     }
   }
   async close(): Promise<void> { this.client.destroy() }

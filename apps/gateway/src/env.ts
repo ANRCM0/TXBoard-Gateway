@@ -3,6 +3,12 @@ export type GatewayConfig = {
   port: number
   upstream: URL
   allowedOrigins: ReadonlySet<string>
+  /** GW-204: ingress IPs/CIDRs whose forwarded headers may be trusted. Empty = trust nobody. */
+  trustedIngress: string[]
+  /** GW-204: allowed Host header values (exact or *.suffix). Empty = syntax check only. */
+  allowedHosts: string[]
+  /** GW-204: expected upstream hostnames; the resolved IP of the fetch is verified against these. */
+  upstreamHosts: string[]
   timeoutMs: number
   maxRequestBytes: number
   maxResponseBytes: number
@@ -56,11 +62,21 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     allowedOrigins.add(url.origin)
   }
 
+  const trustedIngress = (env.GATEWAY_TRUSTED_INGRESS || '')
+    .split(',').map(s => s.trim()).filter(Boolean)
+  const allowedHosts = (env.GATEWAY_ALLOWED_HOSTS || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+  const upstreamHosts = (env.GATEWAY_UPSTREAM_HOSTS || upstream.hostname)
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+
   return {
     host: env.GATEWAY_HOST || '127.0.0.1',
     port: intSetting(env.GATEWAY_PORT, 8787, 1, 65535),
     upstream,
     allowedOrigins,
+    trustedIngress,
+    allowedHosts,
+    upstreamHosts,
     timeoutMs: intSetting(env.GATEWAY_UPSTREAM_TIMEOUT_MS, 8000, 500, 60000),
     maxRequestBytes: intSetting(env.GATEWAY_MAX_REQUEST_BYTES, 16384, 1024, 1048576),
     maxResponseBytes: intSetting(env.GATEWAY_MAX_RESPONSE_BYTES, 1048576, 16384, 8388608),

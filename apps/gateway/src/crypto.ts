@@ -57,7 +57,7 @@ export class CryptoService {
       kid,
       publicKey: Buffer.from(serialized).toString('base64url'),
       scope: accountWorkflows ? 'account-workflows' : 'login-only',
-    })
+    } as const)
   }
   publicKey() { return { ...this.published } }
 
