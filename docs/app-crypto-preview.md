@@ -71,3 +71,44 @@ On 1Panel/root deployments this is important; otherwise Gateway will
 correctly fail startup rather than silently disabling encryption. Do not make
 the key world-readable as a workaround. The Docker CI checks startup and public
 key discovery with this exact non-root secret mount.
+
+## Redis-backed replay & business-workflow increment
+
+HPKE operation-specific AAD supports login, registration and email verification.
+Redis `SET NX PX` atomically reserves each (kid, nonce) across replicas for 121s
+before any Laravel operation is invoked. A replay returns **409**. Unreachable
+Redis causes **503** and **never** falls back to memory. No credentials or email
+address appear in Redis replay keys. The Redis-backed fixed-window account
+throttle uses SHA-256 of normalized email, with atomic `INCR + PEXPIRE` Lua.
+
+Rate policy: login 8/minute, registration 3/10 minutes,
+email code 2/10 minutes **per normalized email**. No IP-based trust is inferred
+from arbitrary Forwarded headers. These limits are supplemental: users can
+target another account with requests, and legacy TXBoard routes bypass Gateway;
+deploy Laravel-origin rate controls as well.
+
+Public read-only business APIs added: `GET /dashboard/stats` (three counts) and
+`GET /orders/:tradeNo/status` (current user's order status).
+
+Sensitive account writes remain **off by default** and are only exposed when
+`GATEWAY_ACCOUNT_WORKFLOWS_ENABLED=true` with HPKE and Redis enabled:
+`POST /secure/auth/register` and `POST /secure/auth/email-code`.
+The SDK automatically encrypts both operations; Laravel enforces its original
+email code, invitation, whitelist and CAPTCHA policies. This Gateway does not
+hold admin tokens or provide an unverified quick-buy / payment write path.
+
+Example Docker setup with bundled private Redis (for local/staging only):
+```sh
+docker compose -f compose.yaml -f compose.crypto.yaml -f compose.redis.yaml up -d --build
+```
+For **existing 1Panel Redis**, omit `compose.redis.yaml`, supply a protected
+`GATEWAY_REDIS_URL` reachable on private Docker networking, and keep its
+credentials out of Git and logs. The bundled Redis uses an append-only volume,
+`appendfsync always`, and noeviction policy. Proper Redis credentials, HA and
+backups must still be managed by the operator. Redis replicas/failover with
+asynchronous replication may lose reservations on failover; don't claim perfect
+persistent anti-replay without infrastructure review.
+
+Do not enable account writes in production without hardened ingress rate
+limiting, real TXBoard CAPTCHA/email validation, trust boundary review, and
+security acceptance. Billing orders still require Laravel durable idempotency.

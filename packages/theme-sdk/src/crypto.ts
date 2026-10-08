@@ -5,10 +5,10 @@ export type KeyDiscovery = {
   suite: 'DHKEM(P-256,HKDF-SHA256)+HKDF-SHA256+AES-256-GCM'
   kid: string
   publicKey: string
-  scope: 'login-only'
+  scope: 'login-only' | 'account-workflows'
 }
 const info = new TextEncoder().encode('TXBOARD-GW-V1-LOGIN-HPKE')
-const aadPrefix = 'txboard-gateway:v1\nPOST\n/gateway/v1/secure/auth/login\n'
+const aadPrefix = 'txboard-gateway:v1\nPOST\n/gateway/v1/secure/auth/'
 const suite = new CipherSuite({
   kem: new DhkemP256HkdfSha256(), kdf: new HkdfSha256(), aead: new Aes256Gcm(),
 })
@@ -21,10 +21,12 @@ function fromB64(value: string): Uint8Array {
 function toB64(bytes: Uint8Array): string {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
-export async function encryptLoginPayload(key: KeyDiscovery, data: unknown) {
+export type CryptoOperation = 'login' | 'register' | 'email-code'
+export async function encryptForOperation(key: KeyDiscovery, data: unknown, operation: CryptoOperation) {
   if (key.protocol !== 'HPKE-RFC9180'
     || key.suite !== 'DHKEM(P-256,HKDF-SHA256)+HKDF-SHA256+AES-256-GCM'
-    || key.scope !== 'login-only'
+    || !['login-only', 'account-workflows'].includes(key.scope)
+    || (operation !== 'login' && key.scope !== 'account-workflows')
     || !/^[a-f0-9]{24}$/.test(key.kid)) {
     throw new Error('Unsupported Gateway encryption parameters')
   }
@@ -32,7 +34,10 @@ export async function encryptLoginPayload(key: KeyDiscovery, data: unknown) {
   const sender = await suite.createSenderContext({ recipientPublicKey: publicKey, info })
   const ts = Date.now()
   const nonce = toB64(crypto.getRandomValues(new Uint8Array(16)))
-  const aad = new TextEncoder().encode(aadPrefix + key.kid + '\n' + ts + '\n' + nonce)
+  const aad = new TextEncoder().encode(aadPrefix + operation + '\n' + key.kid + '\n' + ts + '\n' + nonce)
   const ciphertext = await sender.seal(new TextEncoder().encode(JSON.stringify(data)), aad)
   return { kid: key.kid, ts, nonce, enc: toB64(new Uint8Array(sender.enc)), ct: toB64(new Uint8Array(ciphertext)) }
 }
+
+/** Historical public helper remains compatible for encrypted login. */
+export const encryptLoginPayload = (key: KeyDiscovery, data: unknown) => encryptForOperation(key, data, 'login')

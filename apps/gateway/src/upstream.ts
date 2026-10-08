@@ -5,6 +5,7 @@ export type GatewayFailureCode =
   | 'UPSTREAM_ERROR'
   | 'PAYLOAD_TOO_LARGE'
   | 'VALIDATION_ERROR'
+  | 'RATE_LIMITED'
 
 export class GatewayFailure extends Error {
   constructor(

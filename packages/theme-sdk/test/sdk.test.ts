@@ -99,3 +99,27 @@ describe('extended application SDK', () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('/gateway/v1/crypto/key')
   })
 })
+
+describe('encrypted account workflow SDK', () => {
+  it('requires HPKE discovery for registration and verification, with no plaintext fallback', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      ok: false, error: { code: 'NOT_FOUND', message: 'Disabled' },
+      meta: { version: '1', requestId: 'test' },
+    }, { status: 404 }))
+    const sdk = createTXBoardClient({ fetchImpl: fetchImpl as typeof fetch })
+    await expect(sdk.auth.register({ email: 'u@example.test', password: 'password123' }))
+      .rejects.toMatchObject({ status: 404 })
+    await expect(sdk.auth.sendEmailCode({ email: 'u@example.test' }))
+      .rejects.toMatchObject({ status: 404 })
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual(['/gateway/v1/crypto/key', '/gateway/v1/crypto/key'])
+  })
+  it('exposes dashboard and payment status as protected read operations', async () => {
+    const fetchImpl = vi.fn(async () => response({ status: 0 }))
+    const sdk = createTXBoardClient({ fetchImpl: fetchImpl as typeof fetch, getToken: () => 'user-token-123' })
+    await sdk.dashboard.stats()
+    await sdk.orders.status('O-123')
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      '/gateway/v1/dashboard/stats', '/gateway/v1/orders/O-123/status',
+    ])
+  })
+})

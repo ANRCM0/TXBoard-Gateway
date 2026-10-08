@@ -4,6 +4,8 @@ services:
   gateway:
     environment:
       GATEWAY_HPKE_MODE: optional
+      GATEWAY_REDIS_URL: ${GATEWAY_REDIS_URL:?Redis URL required for encrypted operations}
+      GATEWAY_ACCOUNT_WORKFLOWS_ENABLED: ${GATEWAY_ACCOUNT_WORKFLOWS_ENABLED:-false}
       GATEWAY_HPKE_KEY_FILE: /run/secrets/gateway-hpke.json
     secrets:
       - source: gateway-hpke

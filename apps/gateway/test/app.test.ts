@@ -3,7 +3,7 @@ import { createGatewayApp } from '../src/app.js'
 import { loadConfig } from '../src/env.js'
 import { CryptoService, loadCryptoService } from '../src/crypto.js'
 import { generateKeyPairSync } from 'node:crypto'
-import { encryptLoginPayload } from '../../../packages/theme-sdk/src/crypto.js'
+import { encryptLoginPayload, encryptForOperation } from '../../../packages/theme-sdk/src/crypto.js'
 
 const config = loadConfig({
   TXBOARD_UPSTREAM_URL: 'https://txboard.example/',
@@ -15,6 +15,15 @@ function mockFetch(payload: unknown, status = 200) {
 function ok(data: unknown) { return { status: 'success', message: null, data } }
 async function dataOf(response: Response) { return await response.json() as any }
 const token = 'Bearer usertoken_longer_than_eight'
+function fakeReplay() {
+  const seen = new Set<string>()
+  return { reserve: async (kid: string, nonce: string) => {
+    const key = kid + ':' + nonce
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }}
+}
 
 describe('gateway security and TXBoard v1 adapters', () => {
   it('has a minimal local health endpoint with no upstream secrets', async () => {
@@ -49,6 +58,7 @@ describe('gateway security and TXBoard v1 adapters', () => {
       capabilities: [
         'auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config',
         'user.subscription.summary', 'orders.detail', 'payments.methods', 'notices.list',
+        'dashboard.stats', 'orders.status',
       ],
     })
     expect(res.headers.get('access-control-allow-origin')).toBe('https://theme.example')
@@ -317,7 +327,7 @@ describe('application read models and experimental HPKE login', () => {
 
   it('roundtrips standard HPKE login and rejects replay, tamper and expiry', async () => {
     const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
-    const service = await CryptoService.create(privateKey.export({ format: 'jwk' }))
+    const service = await CryptoService.create(privateKey.export({ format: 'jwk' }), fakeReplay())
     const discovery = service.publicKey()
     const fetcher = mockFetch(ok({ auth_data: token, is_admin: false, secure_path: 'never' }))
     const app = createGatewayApp(config, fetcher, service)
@@ -340,5 +350,84 @@ describe('application read models and experimental HPKE login', () => {
     expect((await send({ ...encrypted, ts: Date.now() - 120_000 })).status).toBe(400)
     expect(fetcher).toHaveBeenCalledTimes(1)
     expect((fetcher.mock.calls[0] as any)[1].headers.has('Authorization')).toBe(false)
+  })
+})
+
+describe('account workflows and read-only dashboard models', () => {
+  it('fetches account stats and order status only for the requesting Laravel user', async () => {
+    const fetcher = mockFetch(ok([2, 1, 9]))
+    const app = createGatewayApp(config, fetcher)
+    expect((await app.request('/gateway/v1/dashboard/stats')).status).toBe(401)
+    const res = await app.request('/gateway/v1/dashboard/stats', { headers: { Authorization: token } })
+    expect((await dataOf(res)).data).toEqual({ unpaidOrders: 2, openTickets: 1, invitedUsers: 9 })
+    expect((fetcher.mock.calls[0] as any)[0]).toBe('https://txboard.example/api/v1/user/getStat')
+    const check = mockFetch(ok(0))
+    const checked = await createGatewayApp(config, check).request('/gateway/v1/orders/O-7/status', { headers: { Authorization: token } })
+    expect((await dataOf(checked)).data).toEqual({ tradeNo: 'O-7', status: 0 })
+    expect((check.mock.calls[0] as any)[0]).toBe('https://txboard.example/api/v1/user/order/check?trade_no=O-7')
+    expect((await createGatewayApp(config, check).request('/gateway/v1/orders/not%2Fallowed/status', {
+      headers: { Authorization: token },
+    })).status).not.toBe(200)
+  })
+  it('rejects malformed dashboard and order status upstream success', async () => {
+    const bad = mockFetch(ok([1, 2, 'secret']))
+    const res = await createGatewayApp(config, bad).request('/gateway/v1/dashboard/stats', { headers: { Authorization: token } })
+    expect(res.status).toBe(502)
+    const malformed = mockFetch(ok({ status: 0, admin: true }))
+    const status = await createGatewayApp(config, malformed).request('/gateway/v1/orders/O-7/status', { headers: { Authorization: token } })
+    expect(status.status).toBe(502)
+  })
+  it('keeps account writes off without both HPKE and a distributed limiter', async () => {
+    const fetcher = mockFetch(ok({}))
+    const app = createGatewayApp(config, fetcher)
+    expect((await app.request('/gateway/v1/secure/auth/register', { method: 'POST' })).status).toBe(404)
+    expect((await app.request('/gateway/v1/secure/auth/email-code', { method: 'POST' })).status).toBe(404)
+    expect(() => createGatewayApp(config, fetcher, undefined, { accountWorkflows: true })).toThrow()
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+  it('executes encrypted registration and email verification while preserving Laravel policy', async () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+    const crypto = await CryptoService.create(privateKey.export({ format: 'jwk' }), fakeReplay(), true)
+    const check = vi.fn(async () => {})
+    const limiter = { check }
+    const fetcher = vi.fn(async (url: string) => Response.json(ok(
+      url.endsWith('/auth/register')
+        ? { auth_data: token, token: 'private-token', secure_path: 'private-admin' }
+        : true,
+    )))
+    const app = createGatewayApp(config, fetcher as typeof fetch, crypto, { accountWorkflows: true, limiter })
+    const discovery = crypto.publicKey()
+    expect(discovery.scope).toBe('account-workflows')
+    const encryptAndSend = async (op: 'register' | 'email-code', value: unknown) => {
+      const sealed = await encryptForOperation(discovery, value, op)
+      return app.request('/gateway/v1/secure/auth/' + op, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sealed),
+      })
+    }
+    const reg = await encryptAndSend('register', {
+      email: 'new@example.test', password: 'long-password', email_code: '123456',
+      invite_code: 'ref-1', turnstile_token: 'captcha-token',
+    })
+    expect(reg.status).toBe(200)
+    expect((await dataOf(reg)).data).toEqual({ auth_data: token })
+    const emailRes = await encryptAndSend('email-code', { email: 'new@example.test', turnstile_token: 'captcha-token' })
+    expect((await dataOf(emailRes)).data).toEqual({ sent: true })
+    expect(check.mock.calls.map(([kind]) => kind)).toEqual(['register', 'email-code'])
+    expect((fetcher.mock.calls[0] as any)[0]).toContain('/passport/auth/register')
+    expect((fetcher.mock.calls[1] as any)[0]).toContain('/passport/comm/sendEmailVerify')
+    expect((fetcher.mock.calls[0] as any)[1].headers.has('Authorization')).toBe(false)
+  })
+  it('binds HPKE ciphertext to the registered operation route', async () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+    const crypto = await CryptoService.create(privateKey.export({ format: 'jwk' }), fakeReplay(), true)
+    const fetcher = mockFetch(ok({ auth_data: token }))
+    const limiter = { check: vi.fn(async () => {}) }
+    const app = createGatewayApp(config, fetcher, crypto, { accountWorkflows: true, limiter })
+    const sealed = await encryptForOperation(crypto.publicKey(), { email: 'u@example.test', password: 'pass12345' }, 'register')
+    const res = await app.request('/gateway/v1/secure/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(sealed),
+    })
+    expect(res.status).toBe(400)
+    expect(fetcher).not.toHaveBeenCalled()
   })
 })
