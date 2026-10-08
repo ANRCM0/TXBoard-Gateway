@@ -77,6 +77,7 @@ SDK 不负责保存 Session、密码或订阅私密 Token，也不会将 Bearer 
 
 ## 维护文档
 
+- [模块化单体架构与信任边界](./docs/architecture.md) · [中间件/路由策略实施规范（目标态，尚未实现）](./docs/middleware-architecture.md)
 - [当前开发状态、验收清单与证据](./docs/development-status.md)
 - [Docker / 1Panel 部署、私钥、Redis 与回滚](./docs/docker-deployment.md)
 - [API / SDK 契约](./contracts/gateway-v1.md)
