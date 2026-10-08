@@ -67,6 +67,9 @@ jobs:
           printf '%s\n' '{"kty":"EC","crv":"P-256","x":"fixture","y":"fixture","d":"fixture"}' > secrets/gateway-hpke.json
           docker compose -f compose.yaml -f compose.crypto.yaml config --quiet
           docker compose -f compose.yaml -f compose.crypto.yaml -f compose.redis.yaml config --quiet
+          # The bundled Redis overlay works without an external Redis URL.
+          env -u GATEWAY_REDIS_URL docker compose -f compose.yaml -f compose.crypto.yaml -f compose.redis.yaml config --quiet
+          test "$(env -u GATEWAY_REDIS_URL docker compose -f compose.yaml -f compose.crypto.yaml -f compose.redis.yaml config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["gateway"]["environment"]["GATEWAY_REDIS_URL"])')" = 'redis://gateway-redis:6379'
           ! docker compose -f compose.yaml config | grep -Eq 'published:|host_port:'
           ! docker compose -f compose.yaml -f compose.crypto.yaml config | grep -Eq 'published:|host_port:'
           # This fixture is not an HPKE key; remove it before the real key smoke.

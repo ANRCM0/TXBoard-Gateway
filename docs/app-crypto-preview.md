@@ -112,3 +112,9 @@ persistent anti-replay without infrastructure review.
 Do not enable account writes in production without hardened ingress rate
 limiting, real TXBoard CAPTCHA/email validation, trust boundary review, and
 security acceptance. Billing orders still require Laravel durable idempotency.
+
+**Compose interpolation note:** The HPKE overlay permits an empty Redis URL
+only while parsing Compose; the actual Gateway startup requires Redis and
+will fail closed when HPKE is enabled without a configured address.
+The local `compose.redis.yaml` overlay supplies the private service URL,
+while external 1Panel deployments set `GATEWAY_REDIS_URL` explicitly.
