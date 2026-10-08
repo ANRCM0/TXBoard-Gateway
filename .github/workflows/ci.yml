@@ -56,6 +56,11 @@ jobs:
           docker compose -f compose.yaml -f compose.crypto.yaml config --quiet
           ! docker compose -f compose.yaml config | grep -Eq 'published:|host_port:'
           ! docker compose -f compose.yaml -f compose.crypto.yaml config | grep -Eq 'published:|host_port:'
+      - name: Ensure Docker build context never includes private key material
+        run: |
+          test -f .dockerignore
+          grep -Fxq 'secrets/' .dockerignore
+          grep -Fxq '.env' .dockerignore
       - name: Build production Docker image
         run: docker build -t txboard-gateway:phase1 .
       - name: Container boots with fixed upstream configuration

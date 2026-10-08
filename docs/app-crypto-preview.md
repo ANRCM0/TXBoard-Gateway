@@ -49,3 +49,8 @@ No public ports are published. Join the private proxy network from Caddy/Nginx/1
 - Dual-key rotation, revocation, backpressure and external security audit.
 - Isolated real TXBoard/Laravel/MySQL/Redis testing, error-case fixtures and browser CAPTCHA tests.
 - Payment writes require separate Laravel persistent idempotency; not part of this preview.
+
+**Build-context isolation:** `.dockerignore` excludes `secrets/`, environment
+files, test fixtures and Git metadata from image build contexts. Compose mounts
+the private JWK file at runtime only; it must not be copied into a Docker layer,
+CI artifact or shared volume accessible by frontend containers.
