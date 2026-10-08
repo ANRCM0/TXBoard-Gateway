@@ -67,6 +67,16 @@ For protected requests provide a `getToken` callback. `auth.login()` returns the
 
 See [theme integration](./contracts/theme-integration-v1.md), [API contract](./contracts/gateway-v1.md), [architecture](./docs/architecture.md) and [security expectations](./SECURITY.md).
 
+## Development plan after Phase 1
+
+The next work is **real TXBoard integration (M1 / Phase 1.5)**, not enabling experimental encryption or payment writes. For a concrete development sequence, dependencies, security gates and acceptance evidence:
+
+- **[Detailed implementation plan (Chinese)](./docs/implementation-plan.md)** — phased architecture, cross-repository integration, security/threat model, safe transactions, optional encryption, theme SDK/runtime, performance targets and production rollout/rollback.
+- **[Issue-ready task backlog (Chinese)](./docs/task-backlog.md)** — GW-101 through GW-509 with priorities, responsible repositories, dependencies and measurable completion criteria.
+- **[Roadmap and milestones](./docs/roadmap.md)** — brief stage status and the immediate next tasks.
+
+All later milestones are proposed work; Phase 1 CI passing does **not** establish production acceptance or that application-layer encryption is available.
+
 ## Development status
 
 Phase 1 is an independently deployable compatibility slice. It is not automatically enabled by installing this repository; production integration with TXBoard and live end-to-end tests must happen separately.
