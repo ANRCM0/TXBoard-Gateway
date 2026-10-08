@@ -29,9 +29,8 @@ test('Redis account limiter atomically stops requests across two clients and doe
   assert.equal(results.filter(x=>x.status==='rejected'&&x.reason.status===429).length,4)
   assert.equal(await b.reserve(rnd(),rnd(),1000),true)
 })
-test('nonce is never released after malformed payload and Redis failure blocks requests', async t => {
+test('nonce is never released after malformed payload and Redis failure blocks requests', async () => {
   const redis = await RedisSecurity.connect(url)
-  t.after(async()=>redis.close())
   const {privateKey} = generateKeyPairSync('ec',{namedCurve:'prime256v1'})
   const jwk = privateKey.export({format:'jwk'})
   const gateway = await CryptoService.create(jwk,redis,true)
