@@ -21,3 +21,21 @@ const profile = await txboard.user.profile()
 - No global API interceptors, cookies, or unsafe arbitrary URL method.
 
 See [Gateway HTTP contract](../../contracts/gateway-v1.md).
+
+## Docker Gateway app layer and optional encryption
+
+`createTXBoardClient({ baseURL, getToken })` additionally exposes:
+`user.subscription()`, `orders.detail(tradeNo)`, `payments.list()` and
+`notices.list({current, pageSize})`. All require a user Bearer and do not
+provide transaction writes.
+
+To opt into experimental HPKE **login-request-only** sealing:
+```ts
+const sdk = createTXBoardClient({ encryptedLogin: true })
+await sdk.auth.login({ email: 'user@example.test', password: 'your-password' })
+```
+The Docker Gateway must be running with `compose.crypto.yaml` and a persistent
+private JWK file. There is no silent downgrade on key discovery failure; use an
+HTTPS ingress in production. Browser frameworks should bundle the SDK via their
+normal Vite/Next/React toolchain, which resolves the `@hpke/core` dependency.
+This mode is not production-ready; see `docs/app-crypto-preview.md`.

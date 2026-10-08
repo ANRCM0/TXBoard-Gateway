@@ -1,0 +1,39 @@
+# The supported Gateway deployment is Docker Compose, not host-level Node.
+# Run: docker network create txboard-gateway-private (once), then docker compose up -d --build.
+name: txboard-gateway
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${GATEWAY_IMAGE:-txboard-gateway:local}
+    restart: unless-stopped
+    init: true
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 8787
+      TXBOARD_UPSTREAM_URL: ${TXBOARD_UPSTREAM_URL:?TXBoard upstream origin required}
+      TXBOARD_ALLOW_PRIVATE_HTTP: ${TXBOARD_ALLOW_PRIVATE_HTTP:-false}
+      GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_ALLOWED_ORIGINS:?exact allowed site origins required}
+      GATEWAY_UPSTREAM_TIMEOUT_MS: ${GATEWAY_UPSTREAM_TIMEOUT_MS:-8000}
+      GATEWAY_HPKE_MODE: disabled
+    expose:
+      - '8787'
+    networks:
+      - private-proxy
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8787/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 5
+      start_period: 5s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+
+networks:
+  private-proxy:
+    external: true
+    name: ${GATEWAY_DOCKER_NETWORK:-txboard-gateway-private}

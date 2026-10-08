@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "node --env-file=../../.env --import tsx --watch src/index.ts",
     "start": "node dist/index.js",
@@ -14,7 +16,8 @@
   "dependencies": {
     "@hono/node-server": "1.19.4",
     "hono": "4.10.6",
-    "zod": "4.1.12"
+    "zod": "4.1.12",
+    "@hpke/core": "1.9.0"
   },
   "devDependencies": {
     "@types/node": "22.19.0",

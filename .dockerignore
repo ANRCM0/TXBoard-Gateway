@@ -1,0 +1,15 @@
+.git
+.github
+.env
+.env.*
+secrets/
+node_modules/
+**/node_modules/
+**/dist/
+coverage/
+test-results/
+staging/
+tests/
+docs/
+scripts/
+*.log

@@ -1,4 +1,4 @@
-name: Gateway Phase 1.5 CI
+name: Gateway Docker App + HPKE CI
 
 on:
   push:
@@ -44,6 +44,25 @@ jobs:
         run: |
           docker compose -f staging/compose.gateway.yaml config --quiet
           ! docker compose -f staging/compose.gateway.yaml config | grep -Eq 'published:|host_port:'
+      - name: Validate Docker-only deployment and optional crypto overlay
+        env:
+          GATEWAY_DOCKER_NETWORK: txboard-gateway-test-network
+          TXBOARD_UPSTREAM_URL: https://txboard.example
+          GATEWAY_ALLOWED_ORIGINS: https://theme.example
+        run: |
+          docker compose -f compose.yaml config --quiet
+          mkdir -p secrets
+          printf '%s\n' '{"kty":"EC","crv":"P-256","x":"fixture","y":"fixture","d":"fixture"}' > secrets/gateway-hpke.json
+          docker compose -f compose.yaml -f compose.crypto.yaml config --quiet
+          ! docker compose -f compose.yaml config | grep -Eq 'published:|host_port:'
+          ! docker compose -f compose.yaml -f compose.crypto.yaml config | grep -Eq 'published:|host_port:'
+          # This fixture is not an HPKE key; remove it before the real key smoke.
+          rm -f secrets/gateway-hpke.json
+      - name: Ensure Docker build context never includes private key material
+        run: |
+          test -f .dockerignore
+          grep -Fxq 'secrets/' .dockerignore
+          grep -Fxq '.env' .dockerignore
       - name: Build production Docker image
         run: docker build -t txboard-gateway:phase1 .
       - name: Container boots with fixed upstream configuration
@@ -58,6 +77,30 @@ jobs:
             sleep 1
           done
           docker logs txboard-gateway-test
+          exit 1
+      - name: Docker HPKE private file mounts with non-root service
+        run: |
+          mkdir -p secrets
+          # Create the key outside the build context; do not print the file.
+          docker run --rm -v "$PWD:/work" -w /work node:22.23.2-alpine \
+            node scripts/generate-hpke-key.mjs
+          sudo chown 1000:1000 secrets/gateway-hpke.json
+          sudo chmod 600 secrets/gateway-hpke.json
+          docker run -d --name txboard-gateway-hpke-test \
+            --read-only --cap-drop ALL \
+            -v "$PWD/secrets/gateway-hpke.json:/run/secrets/gateway-hpke.json:ro" \
+            -e GATEWAY_HOST=0.0.0.0 \
+            -e GATEWAY_HPKE_MODE=optional \
+            -e GATEWAY_HPKE_KEY_FILE=/run/secrets/gateway-hpke.json \
+            -e TXBOARD_UPSTREAM_URL=https://txboard.example \
+            -p 127.0.0.1:18788:8787 txboard-gateway:phase1
+          trap 'docker rm -f txboard-gateway-hpke-test >/dev/null 2>&1 || true; rm -f secrets/gateway-hpke.json' EXIT
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18788/gateway/v1/crypto/key | \
+              grep -q '"protocol":"HPKE-RFC9180"'; then exit 0; fi
+            sleep 1
+          done
+          docker logs txboard-gateway-hpke-test
           exit 1
   browser:
     runs-on: ubuntu-latest

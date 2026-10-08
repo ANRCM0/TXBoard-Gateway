@@ -3,6 +3,7 @@ import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import type { GatewayConfig } from './env.js'
 import { asRecord, boundedJson, GatewayFailure, upstreamRequest, type UpstreamFetcher } from './upstream.js'
+import type { CryptoService, SealedRequest } from './crypto.js'
 
 type Bindings = { Bindings: Record<string, never>; Variables: { requestId: string } }
 type GatewayContext = Context<Bindings, any, any>
@@ -25,6 +26,19 @@ const statuses = new Set(['0', '1', '2', '3'])
 const planListSchema = z.array(z.looseObject({ id: z.number().int(), name: z.string() }))
 const userProfileSchema = z.looseObject({ email: z.email() })
 const orderListSchema = z.array(z.looseObject({ trade_no: z.string(), status: z.number().int() }))
+const orderDetailSchema = z.looseObject({ trade_no: z.string(), status: z.number().int() })
+const paymentMethodsSchema = z.array(z.looseObject({ id: z.number().int(), name: z.string() }))
+const noticePageSchema = z.object({
+  data: z.array(z.looseObject({ id: z.number().int() })),
+  total: z.number().int().nonnegative(),
+})
+const sealedRequestSchema = z.strictObject({
+  kid: z.string().min(1).max(100),
+  ts: z.number().int(),
+  nonce: z.string().regex(/^[A-Za-z0-9_-]{22}$/),
+  enc: z.string().min(40).max(500),
+  ct: z.string().min(24).max(20000),
+})
 const loginResultSchema = z.object({
   auth_data: z.string().regex(/^Bearer \S{8,}$/),
   is_admin: z.union([z.boolean(), z.number().int()]).optional(),
@@ -68,7 +82,7 @@ function success(c: GatewayContext, data: unknown, status: 200 | 201 = 200) {
   return c.json({ ok: true, data, meta: { version: VERSION, requestId: c.get('requestId') } }, status)
 }
 
-type ErrorStatus = 400 | 401 | 403 | 404 | 405 | 413 | 422 | 429 | 500 | 502 | 503 | 504
+type ErrorStatus = 400 | 401 | 409 | 403 | 404 | 405 | 413 | 422 | 429 | 500 | 502 | 503 | 504
 
 function failure(c: GatewayContext, code: string, message: string, status: ErrorStatus) {
   return c.json({ ok: false, error: { code, message }, meta: { version: VERSION, requestId: c.get('requestId') } }, status)
@@ -105,7 +119,7 @@ async function readLoginRequest(request: Request, maxBytes: number): Promise<unk
   }
 }
 
-export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher = fetch) {
+export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher = fetch, crypto?: CryptoService) {
   const app = new Hono<Bindings>()
 
   app.use('*', async (c, next) => {
@@ -145,7 +159,11 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
       },
       theme,
       security: { captcha: publicCaptcha(data) },
-      capabilities: ['auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config'],
+      capabilities: [
+        'auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config',
+        'user.subscription.summary', 'orders.detail', 'payments.methods', 'notices.list',
+        ...(crypto ? ['auth.login.encrypted'] : []),
+      ],
     })
   })
   app.get(`${PREFIX}/theme/config`, async c =>
@@ -153,14 +171,27 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
   app.get(`${PREFIX}/plans`, async c =>
     success(c, validated(planListSchema, await upstreamRequest(config, fetcher, 'guestPlans'))))
 
-  app.post(`${PREFIX}/auth/login`, async c => {
-    const raw = await readLoginRequest(c.req.raw, config.maxRequestBytes)
+  async function runLogin(c: GatewayContext, raw: unknown) {
     const checked = loginSchema.safeParse(raw)
     if (!checked.success) return failure(c, 'VALIDATION_ERROR', 'Invalid login data', 400)
-    // CAPTCHA is passed to Laravel, which remains its only decision maker.
-    // Explicitly strip TXBoard admin secure_path and legacy token fields.
+    // Laravel is the authority for CAPTCHA, credentials and user session.
     return success(c, validated(loginResultSchema, await upstreamRequest(config, fetcher, 'login', { body: checked.data })))
-  })
+  }
+  app.post(`${PREFIX}/auth/login`, async c =>
+    runLogin(c, await readLoginRequest(c.req.raw, config.maxRequestBytes)))
+
+  // Experimental opt-in encrypted login: cannot be used without a persisted
+  // Docker secret. Not a replacement for TLS or distributed anti-replay.
+  if (crypto) {
+    app.get(`${PREFIX}/crypto/key`, c => success(c, crypto.publicKey()))
+    app.post(`${PREFIX}/secure/auth/login`, async c => {
+      const raw = await readLoginRequest(c.req.raw, config.maxRequestBytes)
+      const checked = sealedRequestSchema.safeParse(raw)
+      if (!checked.success) return failure(c, 'VALIDATION_ERROR', 'Invalid encrypted request', 400)
+      const data = await crypto.open(checked.data as SealedRequest)
+      return runLogin(c, data)
+    })
+  }
 
   app.get(`${PREFIX}/user/profile`, async c => {
     const auth = authBearer(c)
@@ -180,6 +211,66 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
       auth, status: status === undefined ? undefined : Number(status),
     })))
   })
+  app.get(`${PREFIX}/orders/:tradeNo`, async c => {
+    const auth = authBearer(c)
+    if (!auth) return failure(c, 'UNAUTHORIZED', 'Bearer token required', 401)
+    const tradeNo = c.req.param('tradeNo')
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(tradeNo)) {
+      return failure(c, 'VALIDATION_ERROR', 'Invalid order identifier', 400)
+    }
+    return success(c, validated(orderDetailSchema,
+      await upstreamRequest(config, fetcher, 'userOrderDetail', { auth, tradeNo })))
+  })
+
+  app.get(`${PREFIX}/payments`, async c => {
+    const auth = authBearer(c)
+    if (!auth) return failure(c, 'UNAUTHORIZED', 'Bearer token required', 401)
+    const methods = validated(paymentMethodsSchema,
+      await upstreamRequest(config, fetcher, 'userPaymentMethods', { auth }))
+    // Only display fields; no provider configs, credentials or payment URLs.
+    return success(c, methods.map(m => ({
+      id: m.id, name: m.name,
+      icon: typeof m.icon === 'string' ? m.icon : null,
+      payment: typeof m.payment === 'string' ? m.payment : null,
+      handlingFeeFixed: typeof m.handling_fee_fixed === 'number' ? m.handling_fee_fixed : 0,
+      handlingFeePercent: typeof m.handling_fee_percent === 'number' ? m.handling_fee_percent : 0,
+    })))
+  })
+
+  app.get(`${PREFIX}/user/subscription/summary`, async c => {
+    const auth = authBearer(c)
+    if (!auth) return failure(c, 'UNAUTHORIZED', 'Bearer token required', 401)
+    const data = requiredRecord(await upstreamRequest(config, fetcher, 'userSubscription', { auth }))
+    // TXBoard getSubscribe includes user token, UUID and subscribe_url.
+    // This endpoint is safe for an account overview, NOT full subscription export.
+    const optionalNumber = (v: unknown) => typeof v === 'number' && Number.isFinite(v) ? v : null
+    const plan = asRecord(data.plan)
+    return success(c, {
+      planId: optionalNumber(data.plan_id), planName: typeof plan.name === 'string' ? plan.name : null,
+      expiredAt: optionalNumber(data.expired_at), upload: optionalNumber(data.u),
+      download: optionalNumber(data.d), transferEnable: optionalNumber(data.transfer_enable),
+      resetDay: optionalNumber(data.reset_day), deviceLimit: optionalNumber(data.device_limit),
+      speedLimit: optionalNumber(data.speed_limit),
+    })
+  })
+
+  app.get(`${PREFIX}/notices`, async c => {
+    const auth = authBearer(c)
+    if (!auth) return failure(c, 'UNAUTHORIZED', 'Bearer token required', 401)
+    const params = c.req.queries()
+    if (Object.keys(params).some(k => !['current', 'pageSize'].includes(k))
+      || Object.values(params).some(a => a.length !== 1)) {
+      return failure(c, 'VALIDATION_ERROR', 'Invalid notice query', 400)
+    }
+    const current = c.req.query('current') ?? '1'
+    const pageSize = c.req.query('pageSize') ?? '5'
+    if (!/^[1-9][0-9]{0,3}$/.test(current) || !/^(?:[1-9]|[1-9][0-9]|100)$/.test(pageSize)) {
+      return failure(c, 'VALIDATION_ERROR', 'Invalid notice pagination', 400)
+    }
+    return success(c, validated(noticePageSchema, await upstreamRequest(config, fetcher, 'userNotices',
+      { auth, current: Number(current), pageSize: Number(pageSize) })))
+  })
+
   app.post(`${PREFIX}/orders`, c =>
     failure(c, 'METHOD_NOT_ALLOWED', 'Order creation is not available in Gateway v1 Phase 1', 405))
 
@@ -188,7 +279,7 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
     if (error instanceof GatewayFailure) {
       // Preserve meaningful upstream 4xx/429 statuses; never turn backend
       // rate-limit or validation errors into misleading gateway 502s.
-      const status = ([400, 401, 403, 404, 405, 413, 422, 429, 500, 502, 503, 504]
+      const status = ([400, 401, 403, 404, 405, 409, 413, 422, 429, 500, 502, 503, 504]
         .includes(error.status) ? error.status : 502) as ErrorStatus
       return failure(c, error.code, error.message, status)
     }

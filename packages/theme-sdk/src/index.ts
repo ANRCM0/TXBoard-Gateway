@@ -34,6 +34,17 @@ export type LoginPayload = {
   recaptcha_data?: string
   email_code?: string
 }
+export type SubscriptionSummary = {
+  planId: number | null; planName: string | null; expiredAt: number | null
+  upload: number | null; download: number | null; transferEnable: number | null
+  resetDay: number | null; speedLimit: number | null; deviceLimit: number | null
+}
+export type PaymentMethod = {
+  id: number; name: string; icon: string | null; payment: string | null
+  handlingFeeFixed: number; handlingFeePercent: number
+}
+export type Notice = { id: number; [field: string]: unknown }
+export type NoticePage = { data: Notice[]; total: number }
 export type UserAuth = { auth_data: string; is_admin?: boolean | number }
 export type UserProfile = {
   email: string
@@ -77,6 +88,8 @@ export type TXBoardClientOptions = {
   getToken?: () => string | undefined | null | Promise<string | undefined | null>
   fetchImpl?: typeof fetch
   timeoutMs?: number
+  /** Experimental HPKE request encryption for login only. Never silently fall back. */
+  encryptedLogin?: boolean
 }
 
 export function createTXBoardClient(options: TXBoardClientOptions = {}) {
@@ -152,16 +165,33 @@ export function createTXBoardClient(options: TXBoardClientOptions = {}) {
       list: () => invoke<Plan[]>('/plans'),
     },
     auth: {
-      login: (payload: LoginPayload) => invoke<UserAuth>('/auth/login', { method: 'POST', body: payload }),
+      login: async (payload: LoginPayload) => {
+        if (!options.encryptedLogin) return invoke<UserAuth>('/auth/login', { method: 'POST', body: payload })
+        const discovery = await invoke<import('./crypto.js').KeyDiscovery>('/crypto/key')
+        const { encryptLoginPayload } = await import('./crypto.js')
+        const sealed = await encryptLoginPayload(discovery, payload)
+        return invoke<UserAuth>('/secure/auth/login', { method: 'POST', body: sealed })
+      },
     },
     user: {
       profile: () => invoke<UserProfile>('/user/profile', { protected: true }),
+      subscription: () => invoke<SubscriptionSummary>('/user/subscription/summary', { protected: true }),
     },
     orders: {
       list: (query: { status?: 0 | 1 | 2 | 3 } = {}) => invoke<Order[]>(
         query.status === undefined ? '/orders' : `/orders?status=${query.status}`,
         { protected: true },
       ),
+      detail: (tradeNo: string) => invoke<Order>(`/orders/${encodeURIComponent(tradeNo)}`, { protected: true }),
+    },
+    payments: { list: () => invoke<PaymentMethod[]>('/payments', { protected: true }) },
+    notices: {
+      list: (query: { current?: number; pageSize?: number } = {}) => {
+        const params = new URLSearchParams()
+        if (query.current !== undefined) params.set('current', String(query.current))
+        if (query.pageSize !== undefined) params.set('pageSize', String(query.pageSize))
+        return invoke<NoticePage>('/notices' + (params.size ? '?' + params.toString() : ''), { protected: true })
+      },
     },
   }
 }

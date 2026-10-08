@@ -24,6 +24,10 @@ const allowlistedPaths = {
   login: '/api/v1/passport/auth/login',
   userProfile: '/api/v1/user/info',
   userOrders: '/api/v1/user/order/fetch',
+  userOrderDetail: '/api/v1/user/order/detail',
+  userSubscription: '/api/v1/user/getSubscribe',
+  userPaymentMethods: '/api/v1/user/order/getPaymentMethod',
+  userNotices: '/api/v1/user/notice/fetch',
 } as const
 
 export type UpstreamOperation = keyof typeof allowlistedPaths
@@ -86,12 +90,22 @@ export async function upstreamRequest(
     auth?: string
     body?: unknown
     status?: number
+    tradeNo?: string
+    current?: number
+    pageSize?: number
   } = {},
 ): Promise<unknown> {
   // No untrusted path/host input can escape this static allowlist.
   const target = new URL(allowlistedPaths[operation], config.upstream)
   if (operation === 'userOrders' && options.status !== undefined) {
     target.searchParams.set('status', String(options.status))
+  }
+  if (operation === 'userOrderDetail' && options.tradeNo) {
+    target.searchParams.set('trade_no', options.tradeNo)
+  }
+  if (operation === 'userNotices') {
+    target.searchParams.set('current', String(options.current ?? 1))
+    target.searchParams.set('pageSize', String(options.pageSize ?? 5))
   }
   const headers = new Headers({ Accept: 'application/json' })
   if (options.auth) headers.set('Authorization', options.auth)
@@ -148,7 +162,9 @@ export async function upstreamRequest(
     // Unknown successful bodies must not masquerade as valid domain data.
     if (Array.isArray(record.data) && typeof record.total === 'number'
       && Number.isFinite(record.total) && record.total >= 0) {
-      return record.data
+      return operation === 'userNotices'
+        ? { data: record.data, total: record.total }
+        : record.data
     }
     throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
   } catch (err) {

@@ -20,6 +20,7 @@
     "test:browser": "node --test tests/browser/mock-gateway.test.mjs"
   },
   "devDependencies": {
-    "playwright": "1.55.0"
+    "playwright": "1.55.0",
+    "esbuild": "0.25.12"
   }
 }

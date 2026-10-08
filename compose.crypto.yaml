@@ -1,0 +1,17 @@
+# Opt-in single-replica HPKE overlay. Add only after generating a private key.
+# docker compose -f compose.yaml -f compose.crypto.yaml up -d --build
+services:
+  gateway:
+    environment:
+      GATEWAY_HPKE_MODE: optional
+      GATEWAY_HPKE_KEY_FILE: /run/secrets/gateway-hpke.json
+    secrets:
+      - source: gateway-hpke
+        target: gateway-hpke.json
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+    # Preview's anti-replay cache is process-local; do NOT scale this service.
+secrets:
+  gateway-hpke:
+    file: ${GATEWAY_HPKE_SECRET_FILE:-./secrets/gateway-hpke.json}
