@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createGatewayApp } from '../src/app.js'
-import { loadConfig } from '../src/env.js'
-import { CryptoService, loadCryptoService } from '../src/crypto.js'
+import { loadConfig } from '../src/config/env.js'
+import { CryptoService, loadCryptoService } from '../src/services/crypto.js'
 import { generateKeyPairSync } from 'node:crypto'
 import { encryptLoginPayload, encryptForOperation } from '../../../packages/theme-sdk/src/crypto.js'
 

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { Aes256Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from '@hpke/core'
-import { GatewayFailure } from './upstream.js'
+import { GatewayFailure } from '../services/upstream.js'
 
 const info = new TextEncoder().encode('TXBOARD-GW-V1-LOGIN-HPKE')
 const aadPrefix = 'txboard-gateway:v1\nPOST\n/gateway/v1/secure/auth/'

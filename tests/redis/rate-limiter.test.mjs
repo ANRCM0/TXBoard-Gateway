@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { RedisRateLimiter } from '../../apps/gateway/dist/rate-limiter.js'
+import { RedisRateLimiter } from '../../apps/gateway/dist/middleware/rate-limit.js'
 
 const url = process.env.GATEWAY_TEST_REDIS_URL
 if (!url) throw new Error('Set GATEWAY_TEST_REDIS_URL for live Redis integration')

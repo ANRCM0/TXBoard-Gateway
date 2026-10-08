@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createClient } from 'redis'
-import { GatewayFailure } from './upstream.js'
+import { GatewayFailure } from '../services/upstream.js'
 
 /**
  * GW-202: Redis atomic sliding-window rate limiter with route-level policies.

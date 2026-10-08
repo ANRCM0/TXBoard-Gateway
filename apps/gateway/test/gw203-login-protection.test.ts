@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createGatewayApp } from '../src/app.js'
-import { loadConfig } from '../src/env.js'
-import { CryptoService } from '../src/crypto.js'
-import { MemoryLoginProtection, type LoginPolicy } from '../src/login-protection.js'
+import { loadConfig } from '../src/config/env.js'
+import { CryptoService } from '../src/services/crypto.js'
+import { MemoryLoginProtection, type LoginPolicy } from '../src/middleware/login-protection.js'
 import { generateKeyPairSync } from 'node:crypto'
 import { encryptLoginPayload } from '../../../packages/theme-sdk/src/crypto.js'
 

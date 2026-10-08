@@ -5,8 +5,8 @@ import { createClient } from 'redis'
  * GW-203: login anti-credential-stuffing protection.
  *
  * Dual-dimension design (account + source IP):
- *  - Request-budget throttling lives in redis-security.ts (cheap cap per
- *    account/IP per window, fail-closed on Redis errors).
+ *  - Request-budget throttling lives in services/redis-security.ts (cheap
+ *    cap per account/IP per window, fail-closed on Redis errors).
  *  - This module adds *outcome-driven* protection: only real upstream
  *    rejections advance the counters, successful logins reset them, and
  *    repeated failures escalate first to a CAPTCHA challenge and then to a

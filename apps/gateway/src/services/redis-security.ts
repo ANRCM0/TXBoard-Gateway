@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { createClient } from 'redis'
-import { GatewayFailure } from './upstream.js'
-import type { ReplayStore } from './crypto.js'
+import { GatewayFailure } from '../services/upstream.js'
+import type { ReplayStore } from '../services/crypto.js'
 
 export type AccountAction = 'login' | 'register' | 'email-code'
 export interface AccountLimiter { check(action: AccountAction, email: string, clientIp?: string): Promise<void> }
