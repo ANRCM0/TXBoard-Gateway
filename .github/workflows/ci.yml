@@ -56,6 +56,8 @@ jobs:
           docker compose -f compose.yaml -f compose.crypto.yaml config --quiet
           ! docker compose -f compose.yaml config | grep -Eq 'published:|host_port:'
           ! docker compose -f compose.yaml -f compose.crypto.yaml config | grep -Eq 'published:|host_port:'
+          # This fixture is not an HPKE key; remove it before the real key smoke.
+          rm -f secrets/gateway-hpke.json
       - name: Ensure Docker build context never includes private key material
         run: |
           test -f .dockerignore
