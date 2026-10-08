@@ -4,7 +4,7 @@
 
 ## 1. 为什么选择模块化单体
 
-**选型：Node.js 22 + Hono + TypeScript + 路由级声明式策略 + Redis 安全状态。** Hono middleware 在同一 HTTP 请求中串联执行、§await next()§ 返回后逆序处理响应；不会把每层变成单独网络进程。
+**选型：Node.js 22 + Hono + TypeScript + 路由级声明式策略 + Redis 安全状态。** Hono middleware 在同一 HTTP 请求中串联执行、`await next()` 返回后逆序处理响应；不会把每层变成单独网络进程。
 
 | 选项 | 结论 | 原因 |
 | --- | --- | --- |
@@ -16,7 +16,7 @@
 
 ## 2. 生命周期与安全边界
 
-§§§text
+```text
 Edge: TLS -> 基础 IP 频控 -> Body/Host 限制 -> Gateway 私网
 Gateway:
   [全局 before]  requestId -> security headers/no-store -> origin policy
@@ -26,13 +26,13 @@ Gateway:
   [业务]         Laravel 最终鉴权、对象归属、CAPTCHA、数据/交易规则
   [路由 after]   严格 DTO 转换与响应 Zod；明确 error code
   [全局 after]   脱敏计时与 metrics -> response
-§§§
+```
 
 不是所有动作都作为单独 Hono middleware：**参数校验、令牌转换、业务 DTO 允许保留在 handler/adapter 中**，以避免过度抽象。将强制安全基线写在路由文件之外，禁止路由自行关闭。
 
 ### 2.1 全局基线（每次 API 调用）
 
-- 接收边缘限制后的请求，生成 §requestId§；输出统一 envelope、§Cache-Control: no-store§ 和与部署匹配的安全响应头。
+- 接收边缘限制后的请求，生成 `requestId`；输出统一 envelope、`Cache-Control: no-store` 和与部署匹配的安全响应头。
 - 校验 Origin 的精确 allowlist；无 Origin 不代表授权（非浏览器请求必须由 Token/Laravel 权限保护）。
 - 设定/继承请求体与响应大小、上游超时边界；拒绝未知路径、方法、重定向与任意 host。
 - 注入**仅结构化、脱敏的**观察点；仅记录 requestId、路由模板、HTTP 状态、耗时、错误码、有限枚举标签，不记录请求体、原始 URL 查询、完整 IP/email 或 auth header。
@@ -42,27 +42,27 @@ Gateway:
 
 | 策略 | 请求管线（按执行次序） | 必须保持 |
 | --- | --- | --- |
-| §publicRead§ | baseline -> request schema -> allowlisted fetch -> public DTO/response schema | 无 Bearer 自动透传、无 HPKE、无 Redis 硬依赖 |
-| §userRead§ | baseline -> Bearer 格式 -> request schema -> Laravel Bearer 授权 -> DTO | Laravel 判定用户/订单归属；无共享缓存 |
-| §login§ | baseline -> edge/IP guard -> request schema -> 可用时 Redis 账号限流 -> Laravel login/CAPTCHA | 仍保留既有明文登录路径的兼容性，不用 HPKE 升级作悄然破坏 |
-| §secureLogin§ | baseline -> edge/IP guard -> sealed schema -> HPKE open + nonce -> 解密数据 schema -> 账号限流 -> Laravel login | Redis 故障 503；不自动降级到明文 |
-| §secureRegister§ / §secureEmailCode§ | baseline -> edge/IP guard -> sealed schema -> HPKE/nonce -> 注册或发码 schema -> 账号限流 -> Laravel | 默认关闭；未完成真实 CAPTCHA/邮件验收不得生产放量 |
-| §disabledWrite§ | baseline -> 405 | 绝不透传订单、扣款、checkout、callback |
+| `publicRead` | baseline -> request schema -> allowlisted fetch -> public DTO/response schema | 无 Bearer 自动透传、无 HPKE、无 Redis 硬依赖 |
+| `userRead` | baseline -> Bearer 格式 -> request schema -> Laravel Bearer 授权 -> DTO | Laravel 判定用户/订单归属；无共享缓存 |
+| `login` | baseline -> edge/IP guard -> request schema -> 可用时 Redis 账号限流 -> Laravel login/CAPTCHA | 仍保留既有明文登录路径的兼容性，不用 HPKE 升级作悄然破坏 |
+| `secureLogin` | baseline -> edge/IP guard -> sealed schema -> HPKE open + nonce -> 解密数据 schema -> 账号限流 -> Laravel login | Redis 故障 503；不自动降级到明文 |
+| `secureRegister` / `secureEmailCode` | baseline -> edge/IP guard -> sealed schema -> HPKE/nonce -> 注册或发码 schema -> 账号限流 -> Laravel | 默认关闭；未完成真实 CAPTCHA/邮件验收不得生产放量 |
+| `disabledWrite` | baseline -> 405 | 绝不透传订单、扣款、checkout、callback |
 
 对需要账号标识才能限流的操作，**先做不依赖解密的边缘/IP 控制，再执行解密和 nonce，最后执行账号限流**；保留每次请求的成本上界。IP 策略与可信代理未实施前不得声称具备 IP+账号联合保护。
 
 ### 2.3 洋葱模型与错误处理
 
-- §await next()§ 前执行「请求进入」验证，之后做「响应返回」脱敏计时和有限头部处理；后置逻辑必须在拒绝/错误情况下也可靠执行。
-- 429 应明确归属于哪个限流策略，并在正式引入后包含可用的 §Retry-After§；不得在异常时静默放行敏感操作。
+- `await next()` 前执行「请求进入」验证，之后做「响应返回」脱敏计时和有限头部处理；后置逻辑必须在拒绝/错误情况下也可靠执行。
+- 429 应明确归属于哪个限流策略，并在正式引入后包含可用的 `Retry-After`；不得在异常时静默放行敏感操作。
 - 400/401/403/404/405/409/413/422/429/500/502/503/504 与 [现有契约](../contracts/gateway-v1.md) 保持语义兼容；禁止回显 Laravel 错误栈或任意对象。
-- 对上游仅允许固定命名 §operation§，重定向禁止跟随；HTTP 200 中的 Laravel §status:fail§ 仍应映射为失败。
+- 对上游仅允许固定命名 `operation`，重定向禁止跟随；HTTP 200 中的 Laravel `status:fail` 仍应映射为失败。
 
 ## 3. 声明式路由策略（建议 TypeScript 结构）
 
 策略表属于**编译期只读定义**，而不是运行时任意 JSON。下例仅描述未来 API，不能直接当作已实现模块调用：
 
-§§§ts
+```ts
 type PolicyName =
   | 'publicRead'
   | 'userRead'
@@ -87,15 +87,15 @@ const routeDefinitions = [
   { method: 'POST', path: '/gateway/v1/secure/auth/register', policy: 'secureRegister' },
   { method: 'POST', path: '/gateway/v1/orders', policy: 'disabledWrite' },
 ] as const
-§§§
+```
 
-约束：§auth: none§ 不代表匿名访问可调用 Laravel 管理功能；§secureRegister§ 必须依赖 HPKE/Redis/feature flag，不能被单个布尔字段解锁。策略校验应拒绝非法组合，例如 §body: hpke§ 搭配缺失 replay store、§userRead§ 搭配共享缓存、§disabledWrite§ 搭配 upstream 写入。
+约束：`auth: none` 不代表匿名访问可调用 Laravel 管理功能；`secureRegister` 必须依赖 HPKE/Redis/feature flag，不能被单个布尔字段解锁。策略校验应拒绝非法组合，例如 `body: hpke` 搭配缺失 replay store、`userRead` 搭配共享缓存、`disabledWrite` 搭配 upstream 写入。
 
 **强制不可覆盖项：** 全局 baseline、静态上游白名单、Laravel 权威权限、响应/日志敏感信息过滤、支付写入禁用；策略不得通过 HTTP 请求头、theme manifest、客户端 capability 或数据库主题配置动态决定。
 
 ## 4. 建议代码目录（目标态，不是现状）
 
-§§§text
+```text
 apps/gateway/src/
   index.ts                  # 启动/关闭及依赖装配
   app.ts                    # 唯一 Hono 实例、全局 error handler
@@ -123,9 +123,9 @@ apps/gateway/src/
     redis-security.ts       # 当前 redis-security.ts 迁移目标
   contracts/
     schemas.ts
-§§§
+```
 
-职责规则：§routes§ 不直接连 Redis/上游任意 URL；§services§ 不持有用户界面语义；§adapters§ 无副作用且不向客户端返回原始内部字段；§middleware§ 不创建 Laravel 业务权限。不因迁目录而立即改变现有 SDK 的 exports、HTTP URL 或 JSON 字段。
+职责规则：`routes` 不直接连 Redis/上游任意 URL；`services` 不持有用户界面语义；`adapters` 无副作用且不向客户端返回原始内部字段；`middleware` 不创建 Laravel 业务权限。不因迁目录而立即改变现有 SDK 的 exports、HTTP URL 或 JSON 字段。
 
 ## 5. 安全能力与故障策略
 
@@ -148,8 +148,8 @@ Redis 限流键不应出现明文账户标识。当前项目用 SHA-256(email)�
 - 同进程中间件是默认方案，避免每层单独开一个 HTTP 服务。
 - 公共请求不执行用户 Token 检查/HPKE/Redis 安全写入；只有安全政策需要时才使用 Redis。
 - 上游使用稳定连接复用、明确总超时和严格响应大小；不可因聚合请求制造 N+1 网络请求。
-- **缓存不是第一阶段默认行为。** 仅在验证响应字段完全公开后考虑对 §plans§ 和公开配置实行候选 15–60 秒 TTL，需支持配置变更失效；CAPTCHA 配置也必须验证一致性。
-- 订单、账户、订阅概要、支付方式的用户特有数据默认 §no-store§，不得写入共享公共缓存。
+- **缓存不是第一阶段默认行为。** 仅在验证响应字段完全公开后考虑对 `plans` 和公开配置实行候选 15–60 秒 TTL，需支持配置变更失效；CAPTCHA 配置也必须验证一致性。
+- 订单、账户、订阅概要、支付方式的用户特有数据默认 `no-store`，不得写入共享公共缓存。
 - 观测请求总 p50/p95/p99、Gateway 自身耗时、Laravel 上游耗时、状态码、429、503、Redis/HPKE 耗时与进程资源；不加入用户数据标签。
 - 候选目标：相同压测负载下额外网关 p95 ≤ 30ms（不含上游）；**只是拟议验收线，不是已测 SLO**。
 
