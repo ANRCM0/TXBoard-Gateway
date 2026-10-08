@@ -55,3 +55,10 @@ Only after M1 should Gateway assume additional production traffic. Security M2 g
 - [Independent theme integration draft](../contracts/theme-integration-v1.md)
 - [AirBuddy design reference, security boundaries and phase mapping](./airbuddy-design-reference.md)
 - [Security statement](../SECURITY.md)
+
+## GW-103–105 reproducible E2E work
+
+- GW-103: Node 22.23.2; committed npm workspace lockfile; `npm ci` for Actions and Docker build; `npm pack --dry-run`.
+- GW-104: reusable private-network Gateway staging overlay and operator runbook, never public port 8787.
+- GW-105: CI Chromium + real browser execution of the SDK/guest/auth/profile/order **against a controlled fake Laravel upstream**.
+- This mock browser CI does **not** satisfy the real Laravel/MySQL/Redis or third-party CAPTCHA E2E release gates. Separate staging acceptance remains required.

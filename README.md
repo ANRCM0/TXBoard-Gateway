@@ -92,3 +92,15 @@ All later milestones are proposed work; Phase 1 CI passing does **not** establis
 ## Development status
 
 Phase 1 is an independently deployable compatibility slice. It is not automatically enabled by installing this repository; production integration with TXBoard and live end-to-end tests must happen separately.
+
+## Reproducible builds and Phase 1.5 testing
+
+- Runtime and CI target Node **22.23.2**, all npm workspaces use the committed
+  `package-lock.json`, and CI/container builds run `npm ci`.
+- `npm run test:browser` exercises a Chromium theme SDK flow through an actual
+  Gateway process and **controlled fake TXBoard HTTP endpoints**. It validates
+  browser CORS, public config, token routing, unauthorized behavior and order
+  reads but is **not** a real TXBoard/Laravel E2E test.
+- Real staging deployment instructions: [staging runbook](./staging/README.md).
+  It uses a private Docker network and dedicated test accounts and is opt-in.
+- No write/payment/subscription endpoints are added and production routes remain unchanged.

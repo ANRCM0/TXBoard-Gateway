@@ -1,0 +1,38 @@
+# Gateway-only overlay for an EXISTING isolated TXBoard staging network.
+# This file never publishes a port or redirects existing /api routes.
+# Usage: docker compose -f staging/compose.gateway.yaml up -d --build
+name: txboard-gateway-staging
+
+services:
+  txboard-gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 8787
+      TXBOARD_UPSTREAM_URL: ${TXBOARD_STAGING_UPSTREAM_URL:-http://txboard}
+      TXBOARD_ALLOW_PRIVATE_HTTP: "true"
+      GATEWAY_ALLOWED_ORIGINS: ${GATEWAY_STAGING_ALLOWED_ORIGINS:?set an exact staging origin}
+    expose:
+      - "8787"
+    networks:
+      - txboard-staging
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+
+networks:
+  txboard-staging:
+    external: true
+    name: ${TXBOARD_STAGING_NETWORK:?existing isolated TXBoard staging network required}
