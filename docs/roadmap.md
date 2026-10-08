@@ -4,6 +4,12 @@
 > This page is an overview. Engineering work should follow the [full implementation plan](./implementation-plan.md) and [issue-ready backlog and acceptance matrix](./task-backlog.md).  
 > Proposed schedule / gates are estimates, not production delivery promises.
 
+Phase 1.5 source audit is in progress: the Laravel guest/CAPTCHA, login, plan,
+profile and order contracts are documented in [TXBoard V1 source matrix](./txboard-v1-source-contract.md).
+Public CAPTCHA bootstrap and minimal runtime response validation have a first
+implementation. **Real staging responses, browser E2E and rollback validation
+are still required for GW-101/102/104/105 acceptance.**
+
 ## Milestones and release gates
 
 | Gate | Stage | State | Primary deliverable | Required evidence |

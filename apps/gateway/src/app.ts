@@ -20,6 +20,50 @@ const loginSchema = z.strictObject({
 })
 const statuses = new Set(['0', '1', '2', '3'])
 
+// Source-aligned minimum runtime contracts. Unknown TXBoard extension fields remain
+// compatible, but missing core fields fail closed instead of reaching a theme.
+const planListSchema = z.array(z.looseObject({ id: z.number().int(), name: z.string() }))
+const userProfileSchema = z.looseObject({ email: z.email() })
+const orderListSchema = z.array(z.looseObject({ trade_no: z.string(), status: z.number().int() }))
+const loginResultSchema = z.object({
+  auth_data: z.string().regex(/^Bearer \S{8,}$/),
+  is_admin: z.union([z.boolean(), z.number().int()]).optional(),
+})
+
+function validated<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value)
+  if (!parsed.success) {
+    throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
+  }
+  return parsed.data
+}
+
+function requiredRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
+  }
+  return value as Record<string, unknown>
+}
+
+// Only TXBoard guest/comm/config public CAPTCHA metadata may reach theme clients.
+// CaptchaService in Laravel remains responsible for checking submitted tokens.
+function publicCaptcha(data: Record<string, unknown>) {
+  const enabled = data.is_captcha === true || data.is_captcha === 1 || data.is_captcha === '1'
+  if (!enabled) return { enabled: false, type: null, siteKey: null }
+  const candidate = data.captcha_type
+  const type = candidate === 'turnstile' || candidate === 'recaptcha' || candidate === 'recaptcha-v3'
+    ? candidate : null
+  const key = type === 'turnstile' ? data.turnstile_site_key
+    : type === 'recaptcha-v3' ? data.recaptcha_v3_site_key
+    : type === 'recaptcha' ? data.recaptcha_site_key : null
+  return {
+    enabled: true,
+    type,
+    siteKey: typeof key === 'string' && key.trim() ? key : null,
+  }
+}
+
+
 function success(c: GatewayContext, data: unknown, status: 200 | 201 = 200) {
   return c.json({ ok: true, data, meta: { version: VERSION, requestId: c.get('requestId') } }, status)
 }
@@ -90,7 +134,7 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
 
   app.get('/healthz', c => c.json({ status: 'ok', contract: VERSION }))
   app.get(`${PREFIX}/bootstrap`, async c => {
-    const data = asRecord(await upstreamRequest(config, fetcher, 'guestConfig'))
+    const data = requiredRecord(await upstreamRequest(config, fetcher, 'guestConfig'))
     const theme = publicTheme(data)
     return success(c, {
       site: {
@@ -100,26 +144,28 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
         logo: typeof data.logo === 'string' ? data.logo : '',
       },
       theme,
+      security: { captcha: publicCaptcha(data) },
       capabilities: ['auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config'],
     })
   })
   app.get(`${PREFIX}/theme/config`, async c =>
-    success(c, publicTheme(await upstreamRequest(config, fetcher, 'guestConfig'))))
+    success(c, publicTheme(requiredRecord(await upstreamRequest(config, fetcher, 'guestConfig')))))
   app.get(`${PREFIX}/plans`, async c =>
-    success(c, await upstreamRequest(config, fetcher, 'guestPlans')))
+    success(c, validated(planListSchema, await upstreamRequest(config, fetcher, 'guestPlans'))))
 
   app.post(`${PREFIX}/auth/login`, async c => {
     const raw = await readLoginRequest(c.req.raw, config.maxRequestBytes)
     const checked = loginSchema.safeParse(raw)
     if (!checked.success) return failure(c, 'VALIDATION_ERROR', 'Invalid login data', 400)
     // CAPTCHA is passed to Laravel, which remains its only decision maker.
-    return success(c, await upstreamRequest(config, fetcher, 'login', { body: checked.data }))
+    // Explicitly strip TXBoard admin secure_path and legacy token fields.
+    return success(c, validated(loginResultSchema, await upstreamRequest(config, fetcher, 'login', { body: checked.data })))
   })
 
   app.get(`${PREFIX}/user/profile`, async c => {
     const auth = authBearer(c)
     if (!auth) return failure(c, 'UNAUTHORIZED', 'Bearer token required', 401)
-    return success(c, await upstreamRequest(config, fetcher, 'userProfile', { auth }))
+    return success(c, validated(userProfileSchema, await upstreamRequest(config, fetcher, 'userProfile', { auth })))
   })
   app.get(`${PREFIX}/orders`, async c => {
     const auth = authBearer(c)
@@ -130,9 +176,9 @@ export function createGatewayApp(config: GatewayConfig, fetcher: UpstreamFetcher
       || (status !== undefined && c.req.queries('status')?.length !== 1)) {
       return failure(c, 'VALIDATION_ERROR', 'Invalid order query', 400)
     }
-    return success(c, await upstreamRequest(config, fetcher, 'userOrders', {
+    return success(c, validated(orderListSchema, await upstreamRequest(config, fetcher, 'userOrders', {
       auth, status: status === undefined ? undefined : Number(status),
-    }))
+    })))
   })
   app.post(`${PREFIX}/orders`, c =>
     failure(c, 'METHOD_NOT_ALLOWED', 'Order creation is not available in Gateway v1 Phase 1', 405))

@@ -29,7 +29,7 @@ Error codes: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `ORIGIN_DENIED` (40
 
 | Route | Upstream | Data contract |
 | --- | --- | --- |
-| `GET /bootstrap` | guest/comm/config | `{site:{name,description,url,logo},theme:{name,config},capabilities:string[]}` |
+| `GET /bootstrap` | guest/comm/config | `{site,theme,security:{captcha},capabilities:string[]}` |
 | `GET /theme/config` | guest/comm/config | `{name,config}` |
 | `GET /plans` | guest/plan/fetch | TXBoard's current plan array, amounts remain in **cents** |
 | `POST /auth/login` | passport/auth/login | `{auth_data,is_admin?}` plus any other declared upstream user-auth fields |
@@ -37,6 +37,24 @@ Error codes: `VALIDATION_ERROR` (400), `UNAUTHORIZED` (401), `ORIGIN_DENIED` (40
 | `GET /orders` | user/order/fetch | TXBoard's current order array (NOT a paginator) |
 
 All routes are prefixed with `/gateway/v1`. Only `/healthz` sits outside the versioned prefix.
+
+### Public CAPTCHA metadata (bootstrap)
+
+`security.captcha` contains `{enabled:boolean,type:'turnstile'|'recaptcha'|'recaptcha-v3'|null,siteKey:string|null}`.
+The upstream source is the **public** guest configuration; private CAPTCHA secrets are never forwarded.
+When `enabled=true` and `type` or `siteKey` is null, the theme must present an
+unavailable-configuration state and must not bypass CAPTCHA or pretend it is disabled.
+The backend `CaptchaService` always validates submitted challenge tokens.
+
+Login replies deliberately contain only `auth_data` and optional `is_admin`.
+Upstream `secure_path`, legacy `token`, and other undeclared fields are stripped.
+
+Valid response data are checked at runtime for the minimum contract fields
+(Plan: id/name; Profile: email; Order: trade_no/status; Login: auth_data).
+Unknown extension fields for plan, profile and order remain accepted.
+Malformed success bodies return a generic 502 error instead of being forwarded.
+For safety, upstream error messages are not reflected into the public API.
+
 
 ### Login
 
@@ -51,5 +69,5 @@ Body: `email`, `password` and optional TXBoard CAPTCHA fields: `turnstile_token`
 - Active theme public values derive from TXBoard `theme_config`, not old global appearance settings.
 - Theme packages do not define arbitrary API routes or privileged scopes. SDK features are explicit.
 - Current Phase 1 `orders.list` is read-only; no order creation, payment/checkout, registration or logout endpoint.
-- `status`-envelope data may be arrays or objects. SDK treats them as opaque typed TXBoard data until versioned domain schemas are ratified.
+- TXBoard `status` envelopes must be explicit; only legacy `{data:[],total:number}` paginator responses are accepted without `status`. SDK declares types but does not yet perform full schema validation on its own; Gateway enforces minimal core fields.
 - Phase 2 will add request limiting, replay protection and carefully idempotent write operations. Optional application-layer encryption needs a separately reviewed protocol; it is not a security property of Phase 1.
