@@ -43,7 +43,8 @@ export class CryptoService {
       throw new Error('Gateway HPKE key must be a P-256 private JWK')
     }
     const secret = await suite.kem.importKey('jwk', jwk, false)
-    const publicKey = await suite.kem.derivePublicKey(secret)
+    const publicKey = await suite.kem.importKey('jwk',
+      { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y }, true)
     const serialized = new Uint8Array(await suite.kem.serializePublicKey(publicKey))
     const kid = createHash('sha256').update(serialized).digest('hex').slice(0, 24)
     return new CryptoService(secret, {
