@@ -56,7 +56,8 @@ Gateway `bootstrap.security.captcha`：`{"enabled":true,"type":"turnstile","site
 - [x] 对套餐/用户/订单核心字段增加运行时校验，拒绝不规范 200 响应。
 - [ ] 从**隔离真实运行环境**采集脱敏正常/失败 fixture（验证码失败、令牌过期、401/403/422/429、慢上游、非 JSON）。
 - [ ] 依据真实样本冻结 OpenAPI 3.1 与 schema，明确所有状态码和 SDK 相互兼容。
-- [ ] GitHub Actions 的真实 Laravel + MySQL/Redis E2E 及浏览器 Playwright。
+- [x] 浏览器 Playwright 与模拟 Laravel HTTP 上游的端到端兼容测试（**非真实 TXBoard 联调**）。
+- [ ] GitHub Actions 的**真实 Laravel + MySQL/Redis** E2E。
 - [ ] 登录（Turnstile / reCAPTCHA v2 / v3）、账户和订单的真实浏览器试运行。
 - [ ] 可回滚的 opt-in 反代/部署整体验收。
 
