@@ -96,7 +96,7 @@
 
 ## 第三方设计借鉴专项（2026-10）
 
-[AiBuddy / AirBuddy Security Service 源码借鉴和差异化技术决策](./airbuddy-design-reference.md) 将六项经验映射至上述已有任务和四项新任务 GW-209 / GW-310 / GW-311 / GW-312。**只参考体验，不复制共享密钥、通用代理、管理员代注册、可重用 CAPTCHA、SMTP 明文密码邮件等实现。** 所有项均为计划，未自动创建 GitHub Issues。
+[AirBuddy Security Service 源码借鉴和差异化技术决策](./airbuddy-design-reference.md) 将六项经验映射至上述已有任务和四项新任务 GW-209 / GW-310 / GW-311 / GW-312。**只参考体验，不复制共享密钥、通用代理、管理员代注册、可重用 CAPTCHA、SMTP 明文密码邮件等实现。** 所有项均为计划，未自动创建 GitHub Issues。
 
 ## 建议 GitHub Issue 建立顺序
 
