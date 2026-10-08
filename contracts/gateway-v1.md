@@ -71,3 +71,19 @@ Body: `email`, `password` and optional TXBoard CAPTCHA fields: `turnstile_token`
 - Current Phase 1 `orders.list` is read-only; no order creation, payment/checkout, registration or logout endpoint.
 - TXBoard `status` envelopes must be explicit; only legacy `{data:[],total:number}` paginator responses are accepted without `status`. SDK declares types but does not yet perform full schema validation on its own; Gateway enforces minimal core fields.
 - Phase 2 will add request limiting, replay protection and carefully idempotent write operations. Optional application-layer encryption needs a separately reviewed protocol; it is not a security property of Phase 1.
+
+## Docker application preview (additive; not yet live-Laravel validated)
+
+| Gateway | TXBoard V1 (user Bearer) |
+| --- | --- |
+| `GET /user/subscription/summary` | `user/getSubscribe` (strict DTO; removes token, uuid and subscribe_url) |
+| `GET /orders/:tradeNo` | `user/order/detail?trade_no=...` |
+| `GET /payments` | `user/order/getPaymentMethod` (display fields only, login required) |
+| `GET /notices?current=1&pageSize=5` | `user/notice/fetch` legacy `{data,total}` |
+
+**Optional** `GET /crypto/key` publishes HPKE public material. `POST /secure/auth/login`
+accepts HPKE sealed credentials, equivalent to ordinary login authorization.
+SDK opt-in `encryptedLogin: true` never falls back to clear login automatically.
+Request encryption binds method/path/kid/timestamp/nonce in AAD; only request
+body is protected, response continues under TLS. This is a **single-process preview**,
+not a production anti-replay assurance. See [ADR](../docs/app-crypto-preview.md).

@@ -67,3 +67,35 @@ describe('@txboard/theme-sdk v1', () => {
     await expect(offline.plans.list()).rejects.toMatchObject({ code: 'NETWORK_ERROR', message: 'Gateway is unavailable' })
   })
 })
+
+describe('extended application SDK', () => {
+  it('routes only authenticated app read operations', async () => {
+    const calls: string[] = []
+    const fetchImpl = vi.fn(async (url: unknown, opts: any) => {
+      calls.push(String(url))
+      expect(opts.headers.get('Authorization')).toBe('Bearer test-user-session')
+      return response([])
+    })
+    const sdk = createTXBoardClient({ fetchImpl: fetchImpl as typeof fetch, getToken: () => 'test-user-session' })
+    await sdk.user.subscription()
+    await sdk.orders.detail('O-123')
+    await sdk.payments.list()
+    await sdk.notices.list({ current: 2, pageSize: 5 })
+    expect(calls).toEqual([
+      '/gateway/v1/user/subscription/summary',
+      '/gateway/v1/orders/O-123',
+      '/gateway/v1/payments',
+      '/gateway/v1/notices?current=2&pageSize=5',
+    ])
+  })
+  it('never downgrades encrypted login when key discovery fails', async () => {
+    const fetchImpl = vi.fn(async () => Response.json({
+      ok: false, error: { code: 'NOT_FOUND', message: 'Disabled' },
+      meta: { version: '1', requestId: 'test' },
+    }, { status: 404 }))
+    const sdk = createTXBoardClient({ encryptedLogin: true, fetchImpl: fetchImpl as typeof fetch })
+    await expect(sdk.auth.login({ email: 'user@example.test', password: 'password1234' })).rejects.toMatchObject({ status: 404 })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('/gateway/v1/crypto/key')
+  })
+})

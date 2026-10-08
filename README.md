@@ -104,3 +104,16 @@ Phase 1 is an independently deployable compatibility slice. It is not automatica
 - Real staging deployment instructions: [staging runbook](./staging/README.md).
   It uses a private Docker network and dedicated test accounts and is opt-in.
 - No write/payment/subscription endpoints are added and production routes remain unchanged.
+
+## Docker application layer & HPKE preview
+
+**Docker Compose is the supported way to run this service.** See
+[Docker application + encryption preview](./docs/app-crypto-preview.md).
+`compose.yaml` keeps the Gateway private on a dedicated Docker network and
+does not publish additional ports; `compose.crypto.yaml` optionally mounts
+a persisted HPKE private key, with encrypted login usable through the Theme SDK.
+
+Additional fixed user-owned read endpoints: subscription summary, order detail,
+payment method display catalog (authenticated), and notices.
+No checkout/order/payment writes are exposed.
+**Real Laravel/MySQL/Redis acceptance and a third-party crypto review remain deferred.**

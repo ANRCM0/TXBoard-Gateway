@@ -1,4 +1,4 @@
-name: Gateway Phase 1.5 CI
+name: Gateway Docker App + HPKE CI
 
 on:
   push:
@@ -44,6 +44,18 @@ jobs:
         run: |
           docker compose -f staging/compose.gateway.yaml config --quiet
           ! docker compose -f staging/compose.gateway.yaml config | grep -Eq 'published:|host_port:'
+      - name: Validate Docker-only deployment and optional crypto overlay
+        env:
+          GATEWAY_DOCKER_NETWORK: txboard-gateway-test-network
+          TXBOARD_UPSTREAM_URL: https://txboard.example
+          GATEWAY_ALLOWED_ORIGINS: https://theme.example
+        run: |
+          docker compose -f compose.yaml config --quiet
+          mkdir -p secrets
+          printf '%s\n' '{"kty":"EC","crv":"P-256","x":"fixture","y":"fixture","d":"fixture"}' > secrets/gateway-hpke.json
+          docker compose -f compose.yaml -f compose.crypto.yaml config --quiet
+          ! docker compose -f compose.yaml config | grep -Eq 'published:|host_port:'
+          ! docker compose -f compose.yaml -f compose.crypto.yaml config | grep -Eq 'published:|host_port:'
       - name: Build production Docker image
         run: docker build -t txboard-gateway:phase1 .
       - name: Container boots with fixed upstream configuration

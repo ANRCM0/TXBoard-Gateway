@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createGatewayApp } from '../src/app.js'
 import { loadConfig } from '../src/env.js'
+import { CryptoService, loadCryptoService } from '../src/crypto.js'
+import { generateKeyPairSync } from 'node:crypto'
+import { encryptLoginPayload } from '../../../packages/theme-sdk/src/crypto.js'
 
 const config = loadConfig({
   TXBOARD_UPSTREAM_URL: 'https://txboard.example/',
@@ -43,7 +46,10 @@ describe('gateway security and TXBoard v1 adapters', () => {
       site: { name: 'TXBoard Site', description: '', url: '', logo: 'https://cdn.example/logo.svg' },
       theme: { name: 'Nova', config: { theme_color: 'blue' } },
       security: { captcha: { enabled: false, type: null, siteKey: null } },
-      capabilities: ['auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config'],
+      capabilities: [
+        'auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config',
+        'user.subscription.summary', 'orders.detail', 'payments.methods', 'notices.list',
+      ],
     })
     expect(res.headers.get('access-control-allow-origin')).toBe('https://theme.example')
     expect((fetcher.mock.calls[0] as any)[0]).toBe('https://txboard.example/api/v1/guest/comm/config')
@@ -249,5 +255,90 @@ describe('gateway security and TXBoard v1 adapters', () => {
     const res = await createGatewayApp({ ...config, maxResponseBytes: 500 }, fetcher).request('/gateway/v1/plans')
     expect(res.status).toBe(502)
     expect((await dataOf(res)).ok).toBe(false)
+  })
+})
+
+describe('application read models and experimental HPKE login', () => {
+  it('never leaks subscription credentials and applies user Bearer', async () => {
+    const fetcher = mockFetch(ok({
+      plan_id: 10, plan: { name: 'Pro', private_note: 'secret' },
+      token: 'full-subscription-secret', subscribe_url: 'https://secret', uuid: 'secret-uuid',
+      u: 5, d: 7, transfer_enable: 100, expired_at: 999, reset_day: 5,
+    }))
+    const app = createGatewayApp(config, fetcher)
+    expect((await app.request('/gateway/v1/user/subscription/summary')).status).toBe(401)
+    const res = await app.request('/gateway/v1/user/subscription/summary', { headers: { Authorization: token } })
+    const payload = await dataOf(res)
+    expect(payload.data.planName).toBe('Pro')
+    expect(payload.data.upload).toBe(5)
+    expect(JSON.stringify(payload)).not.toContain('full-subscription-secret')
+    expect(JSON.stringify(payload)).not.toContain('secret-uuid')
+    expect(JSON.stringify(payload)).not.toContain('https://secret')
+    expect((fetcher.mock.calls[0] as any)[0]).toBe('https://txboard.example/api/v1/user/getSubscribe')
+  })
+
+  it('restricts order-detail query and display payment DTO', async () => {
+    const detailFetcher = mockFetch(ok({ trade_no: 'T123', status: 0, total_amount: 500 }))
+    const app = createGatewayApp(config, detailFetcher)
+    const res = await app.request('/gateway/v1/orders/T123', { headers: { Authorization: token } })
+    expect((await dataOf(res)).data.trade_no).toBe('T123')
+    expect((detailFetcher.mock.calls[0] as any)[0]).toBe('https://txboard.example/api/v1/user/order/detail?trade_no=T123')
+    expect((await app.request('/gateway/v1/orders/bad%2Furl', { headers: { Authorization: token } })).status).not.toBe(200)
+    const payFetcher = mockFetch(ok([{ id: 3, name: 'Stripe', payment: 'StripeCredit', icon: 'icon',
+      handling_fee_fixed: 20, handling_fee_percent: 1.5, config: { secret: 'never-allow' } }]))
+    const paymentResponse = await createGatewayApp(config, payFetcher)
+      .request('/gateway/v1/payments', { headers: { Authorization: token } })
+    const payload = await dataOf(paymentResponse)
+    expect(payload.data[0]).toEqual({
+      id: 3, name: 'Stripe', payment: 'StripeCredit', icon: 'icon',
+      handlingFeeFixed: 20, handlingFeePercent: 1.5,
+    })
+    expect(JSON.stringify(payload)).not.toContain('never-allow')
+  })
+
+  it('keeps legacy notice pagination and prevents unbounded queries', async () => {
+    const fetcher = mockFetch({ data: [{ id: 12, title: 'Update' }], total: 1 })
+    const app = createGatewayApp(config, fetcher)
+    const res = await app.request('/gateway/v1/notices?current=2&pageSize=10', { headers: { Authorization: token } })
+    expect((await dataOf(res)).data).toEqual({ data: [{ id: 12, title: 'Update' }], total: 1 })
+    expect((fetcher.mock.calls[0] as any)[0]).toContain('current=2&pageSize=10')
+    for (const q of ['?pageSize=500', '?current=0', '?current=1&current=2', '?key=unknown']) {
+      expect((await app.request('/gateway/v1/notices' + q, { headers: { Authorization: token } })).status).toBe(400)
+    }
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps crypto disabled without explicit key file', async () => {
+    await expect(loadCryptoService({ GATEWAY_HPKE_MODE: 'optional' })).rejects.toThrow()
+    expect(await loadCryptoService({ GATEWAY_HPKE_MODE: 'disabled' })).toBeUndefined()
+    const res = await createGatewayApp(config, mockFetch(ok({}))).request('/gateway/v1/crypto/key')
+    expect(res.status).toBe(404)
+  })
+
+  it('roundtrips standard HPKE login and rejects replay, tamper and expiry', async () => {
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+    const service = await CryptoService.create(privateKey.export({ format: 'jwk' }))
+    const discovery = service.publicKey()
+    const fetcher = mockFetch(ok({ auth_data: token, is_admin: false, secure_path: 'never' }))
+    const app = createGatewayApp(config, fetcher, service)
+    const keyResponse = await app.request('/gateway/v1/crypto/key')
+    expect((await dataOf(keyResponse)).data.kid).toBe(discovery.kid)
+    expect(JSON.stringify(await dataOf(await app.request('/gateway/v1/crypto/key')))).not.toContain('"d":')
+    const data = { email: 'user@example.test', password: 'pass12345678' }
+    const encrypted = await encryptLoginPayload(discovery, data)
+    const send = (payload: unknown) => app.request('/gateway/v1/secure/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const okRes = await send(encrypted)
+    expect(okRes.status).toBe(200)
+    expect((await dataOf(okRes)).data.auth_data).toBe(token)
+    expect((await send(encrypted)).status).toBe(409)
+    expect((await send({ ...encrypted, ts: encrypted.ts + 1 })).status).toBe(400)
+    expect((await send({ ...encrypted, kid: 'aaaaaaaaaaaaaaaaaaaaaaaa' })).status).toBe(400)
+    expect((await send({ ...encrypted, ct: encrypted.ct.slice(0, -2) + 'aa' })).status).toBe(400)
+    expect((await send({ ...encrypted, ts: Date.now() - 120_000 })).status).toBe(400)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect((fetcher.mock.calls[0] as any)[1].headers.has('Authorization')).toBe(false)
   })
 })

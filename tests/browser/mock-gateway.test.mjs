@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { readFile } from 'node:fs/promises'
+import { build } from 'esbuild'
 import { chromium } from 'playwright'
 
 const TEST_BEARER = 'Bearer fixture-session-abc123'
@@ -84,7 +84,11 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
   })
   t.after(() => upstream.close())
 
-  const sdkSource = await readFile(new URL('../../packages/theme-sdk/dist/index.js', import.meta.url))
+  const bundle = await build({
+    entryPoints: ['packages/theme-sdk/dist/index.js'],
+    bundle: true, platform: 'browser', format: 'esm', write: false,
+  })
+  const sdkSource = bundle.outputFiles[0].contents
   const frontend = await startServer((req, res) => {
     if (req.url === '/sdk.js') {
       res.setHeader('Content-Type', 'text/javascript')
