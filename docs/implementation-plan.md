@@ -1,15 +1,15 @@
 # TXBoard Gateway 后续开发实施方案（Phase 1 之后）
 
-> 文档版本：2026-10-08 / 规划草案 v1.0  
+> 文档版本：2026-10-08 / 规划草案 v1.1（在原规划上补充进度校准）  
 > 适用仓库：`ANRCM0/TXBoard-Gateway`；协作仓库：`ANRCM0/TXBoard` 和部署仓库 `ANRCM0/TXBoard-Deploy`。  
-> **状态声明：**本文描述的是待实施计划，而非已实现能力。完成状态以实际 PR、CI、联调记录和发布清单为准。时间为单开发者的粗略工程日估算，不是交付承诺。  
+> **状态声明：**本文保留原始设计路线、建议阶段和未完成验收条件；部分代码现已提前实现。请优先查阅 [开发状态台账](./development-status.md)、[路标](./roadmap.md) 与真实 PR/CI。完成代码、模拟测试和正式生产验收不可混为一谈。时间为单开发者的粗略工程日估算，不是交付承诺。  
 > 工作项详见 [任务拆解与验收矩阵](./task-backlog.md)；现有 API 定义以 [gateway-v1](../contracts/gateway-v1.md) 为准；第三方方案的参考事实、安全边界与借鉴计划见 [AirBuddy 中间件借鉴与差异化设计](./airbuddy-design-reference.md)。
 
 ## 0. 目标、现状与范围
 
 **最终目标：**以后每个独立开发的 TXBoard 前端主题（Vue / React / Next.js / 纯 SPA）都能通过同一套 **Gateway Contract + Theme SDK** 访问 TXBoard；Gateway 作为可独立升级的 API 接入层，提供可审计的安全边界、流控与可选应用层负载加密，不复制 Laravel 的核心业务规则。
 
-**Phase 1 已实现并通过仓库 CI 的事实：**
+**Phase 1 基线事实（以下为历史基线，并非当前完整功能列表）：**
 
 - Node.js 22 + Hono + TypeScript 独立服务，固定路径 `/gateway/v1`；`/healthz` 仅用于健康检查。
 - 7 个路由：`bootstrap`、`theme/config`、`plans`、`auth/login`、`user/profile`、只读 `orders`、`healthz`；写入 `POST /orders` 当前返回 405。
@@ -17,7 +17,9 @@
 - Dockerfile、可选 Compose 示例、mock 单元/契约测试与容器启动烟测通过。
 - **尚未** 与真实 TXBoard 后端开展完整 E2E；**尚未** 接入生产反向代理，也未让内置 Vue 前端默认使用 Gateway。
 
-**不得当作现有能力：**Redis 分布式限流、真实浏览器联调、业务写入幂等、独立主题运行时安装规范、加密密钥管理、抗重放、SDK npm 正式发布、生产环境 SLO 验收、WAF/全面防护。
+**当前能力增量（PR #4～#7，已合入 main）：** Docker Compose 为主要部署方式，用户只读应用接口扩展，HPKE 登录/加密注册和邮箱验证码（开关控制），Redis 原子 nonce 防重放和账号限流，Chromium 浏览器 + 模拟 Laravel 后端及 Redis 7.4 并发测试。详见 [状态与证据](./development-status.md)。
+
+**仍不得宣称完成：**真实 TXBoard/Laravel/MySQL/Redis 联调、第三方 CAPTCHA 完整链路、可信代理/IP 防刷和生产告警、密钥轮换与独立密码学审计、Redis 故障转移持久防重放、交易写入幂等、主题安装 v2、SDK 正式 npm 发布、生产 SLO/WAF 或“全站加密”。
 
 ### 0.1 长期必须保持的架构约束
 
@@ -43,7 +45,7 @@
 
 ### 0.3 AirBuddy 参考实现的取舍（新增设计输入）
 
-参考 [AirBuddy Security Service 源码调研及迁移决策](./airbuddy-design-reference.md)：提取 **SDK 无感加密体验、免登录目录/支付方式展示、快速购买一体化、按业务场景验证码、邮件模板、独立低成本部署** 这六类产品需求；它们只是借鉴方向，不是当前 Gateway 已支持的功能。
+参考 [AirBuddy Security Service 源码调研及迁移决策](./airbuddy-design-reference.md)：提取 **SDK 无感加密体验、免登录目录/支付方式展示、快速购买一体化、按业务场景验证码、邮件模板、独立低成本部署** 这六类产品需求；其中 SDK 可选 HPKE、加密注册/邮箱验证码及用户侧读接口已有预览实现；快速购买、支付写入、完整 CAPTCHA 业务编排仍未实现。
 
 - **保留**：固定版本化网关协议、主题 SDK、独立容器、老接口并存。
 - **重做**：若确需应用层加密，则由独立安全 ADR 审查标准公钥协议并由 SDK 自动封装；不是把浏览器与服务端共享的固定对称密码或 API 路径哈希直接复制过来。

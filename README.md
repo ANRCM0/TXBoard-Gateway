@@ -1,128 +1,88 @@
 # TXBoard Gateway
 
-**TXBoard Gateway v1 (Phase 1)** — opt-in, contract-first API gateway for independently developed TXBoard user themes, plus a framework-agnostic TypeScript theme SDK.
+**Docker-first、可选启用的 TXBoard 用户主题 API Gateway**，独立于 Laravel 核心业务，基于 Node.js 22 / Hono / TypeScript，并提供 `@txboard/theme-sdk`。接口统一以 `/gateway/v1` 为前缀。TXBoard Laravel 始终负责认证、验证码、账户归属、订单、余额和支付。
 
-- **Hono + TypeScript** gateway with fixed, auditable routes under `/gateway/v1`.
-- **@txboard/theme-sdk** used by Vue, React, Next.js and standalone SPA themes.
-- Stable response envelopes and explicit TXBoard V1 upstream adapters.
-- Default-deny upstream path routing, guarded cross-origin requests, bounded payloads, timeouts and no credential/body logging.
-- No new database access, admin token, payment privileges or node interfaces.
+> **截至 2026-10-08：PR #4～#7 的代码已进入 main，模拟联调、Redis 并发和 Docker CI 通过；真实 TXBoard + Laravel/MySQL/Redis、真实第三方验证码、生产反代与回滚验收仍未实施。当前不等于生产可用。** 参阅 [开发状态与 CI 证据](./docs/development-status.md)。
 
-**Phase 1 is deliberately not a replacement for the legacy API.** Do not route `/api/v1/*`, `/api/v2/*`, `/s/*`, payment callbacks, plugins or node traffic through this service. Application-layer encryption, Redis rate limiting and write/idempotency flows belong to later phases; HTTPS is mandatory now.
+## 功能概览
 
-## Routes
-
-| Gateway route | Source | Authentication |
+| 功能 | 路由 / SDK | 状态 |
 | --- | --- | --- |
-| `GET /healthz` | gateway local health | none |
-| `GET /gateway/v1/bootstrap` | TXBoard guest config, allowlisted fields | none |
-| `GET /gateway/v1/theme/config` | TXBoard guest config (current public theme) | none |
-| `GET /gateway/v1/plans` | `/api/v1/guest/plan/fetch` | none |
-| `POST /gateway/v1/auth/login` | `/api/v1/passport/auth/login` | credentials + TXBoard's CAPTCHA policy |
-| `GET /gateway/v1/user/profile` | `/api/v1/user/info` | Sanctum user bearer |
-| `GET /gateway/v1/orders` | `/api/v1/user/order/fetch` | Sanctum user bearer |
+| 站点/主题引导和 CAPTCHA 公开元数据 | `bootstrap`、`theme.config` | 已实现 |
+| 套餐、登录与用户资料 | `plans.list`、`auth.login`、`user.profile` | 已实现 |
+| 订单列表、详情、状态 | `orders.list`、`orders.detail`、`orders.status` | **只读** |
+| 订阅用量概览、支付方式展示、通知、账户计数 | `user.subscription`、`payments.list`、`notices.list`、`dashboard.stats` | 已实现 |
+| HPKE 密文登录 | `auth.login` 搭配 `encryptedLogin: true` | 可选，默认关闭 |
+| HPKE 加密注册、发送邮件验证码 | `auth.register`、`auth.sendEmailCode` | **默认关闭**；必须启用 Redis/HPKE |
+| Redis nonce 防重放 + 邮箱维度限流 | `SET NX PX` / Lua | 已实现并通过 CI；非生产安全批准 |
+| 创建订单、checkout/cancel、支付回调、管理端、订阅原文令牌、节点 | 无 Gateway 接口 | **未开放** |
 
-`POST /gateway/v1/orders` is **not enabled in Phase 1**: order writes require a separately designed idempotency and anti-abuse contract. A direct POST gets 405.
+**兼容规则：**只反代 `/gateway/v1/*`；原 `/api/v1/*`、管理端 `/api/v2/*`、`/s/*`、插件、节点、支付回调与 WebSocket **一律仍由 TXBoard 处理**。Gateway 不是通用路径代理，也不使用管理员 Token。
 
-## Requirements
+## Docker 部署（官方运行方式）
 
-- Node.js 22+; npm 10+.
-- A running TXBoard backend, accessible from the gateway.
-- HTTPS and proper TLS validation on public and production ingress.
+### A. 基础模式：无 HPKE / Redis
 
-## Local development
-
-```sh
-npm install
+```bash
 cp .env.example .env
-# Edit TXBOARD_UPSTREAM_URL to the real TXBoard backend.
-npm run dev:gateway
+# 填写 TXBOARD_UPSTREAM_URL、GATEWAY_ALLOWED_ORIGINS
+docker network inspect txboard-gateway-private >/dev/null 2>&1 || docker network create txboard-gateway-private
+docker compose -f compose.yaml config
+docker compose -f compose.yaml up -d --build
+docker compose -f compose.yaml ps
 ```
 
-Health: `http://127.0.0.1:8787/healthz`.
+### B. 本地隔离测试：HPKE + 内置 Redis
 
-```sh
-npm run check      # typecheck both workspaces, unit/contract tests, builds
-npm run build      # compile gateway and SDK
-npm run test       # tests for both workspaces
+```bash
+node scripts/generate-hpke-key.mjs
+sudo chown 1000:1000 secrets/gateway-hpke.json
+sudo chmod 600 secrets/gateway-hpke.json
+docker compose -f compose.yaml -f compose.crypto.yaml -f compose.redis.yaml config
+docker compose -f compose.yaml -f compose.crypto.yaml -f compose.redis.yaml up -d --build
 ```
 
-## Environment
+默认 **不开启**加密注册/邮件验证码。测试账户流程时需在 `.env` 里设置 `GATEWAY_ACCOUNT_WORKFLOWS_ENABLED=true` 并重建服务。采用已有 1Panel Redis 时，不使用 `compose.redis.yaml`，需要受保护的 `GATEWAY_REDIS_URL` 及可达的私有网络。见 [Docker 运维手册](./docs/docker-deployment.md)。
 
-See [`.env.example`](./.env.example). Production examples must provide `TXBOARD_UPSTREAM_URL` and `GATEWAY_ALLOWED_ORIGINS` for cross-origin frontend hosting. In a same-origin reverse-proxy deployment, a browser Origin header must match an explicitly listed frontend origin; leave the allowlist empty only for server-to-server clients not sending Origin.
+网关及 Redis 均不映射额外公网端口，Gateway 容器只能被同 Docker 私网内的代理访问。公网只由原 HTTPS 反代入口对外服务。
 
-Configure the reverse proxy to expose `/gateway/v1/*` to the gateway. **Keep the legacy routes at TXBoard**. Run the gateway behind Caddy/Nginx, not directly public on port 8787. The gateway listens at `127.0.0.1` by default.
+## 开发与 CI
 
-## Theme SDK
+```bash
+npm ci
+npm run check          # TypeScript + Vitest + SDK/Gateway build
+npm run test:browser   # 需安装 Playwright Chromium 和运行中的测试 Redis
+npm run test:redis     # 需设置 GATEWAY_TEST_REDIS_URL
+```
+
+GitHub Actions 在 Redis 7.4、Chromium、Docker 中验证不同层级的模拟流程，**不使用真实 TXBoard 数据库或第三方验证码密钥**。主分支已使用锁文件与 Node 22.23.2 构建。
+
+## 主题开发
 
 ```ts
 import { createTXBoardClient } from '@txboard/theme-sdk'
 
-const api = createTXBoardClient({ baseURL: '/gateway/v1' })
+const api = createTXBoardClient({
+  baseURL: '/gateway/v1',
+  getToken: () => userSession?.auth_data,
+  encryptedLogin: true, // 可选；Docker 端必须配置 HPKE 和 Redis
+})
 const bootstrap = await api.bootstrap()
 const plans = await api.plans.list()
+const summary = await api.user.subscription()
+const stats = await api.dashboard.stats()
 ```
 
-For protected requests provide a `getToken` callback. `auth.login()` returns the backend's user bearer token, but the SDK does **not** persist it, store passwords, or silently attach it to public requests. It is the theme application's responsibility to manage its session securely.
+SDK 不负责保存 Session、密码或订阅私密 Token，也不会将 Bearer 附加到公共接口。详情参阅 [SDK 文档](./packages/theme-sdk/README.md) 和 [HTTP API 契约](./contracts/gateway-v1.md)。
 
-See [theme integration](./contracts/theme-integration-v1.md), [API contract](./contracts/gateway-v1.md), [architecture](./docs/architecture.md) and [security expectations](./SECURITY.md).
+## 维护文档
 
-For Phase 1.5, `GET /gateway/v1/bootstrap` includes the allowlisted public CAPTCHA
-type and site key. Themes must fail closed if CAPTCHA is enabled but lacks a
-supported type/key. The login response is narrowed to user-session fields and
-never exposes TXBoard admin `secure_path` or legacy tokens.
+- [当前开发状态、验收清单与证据](./docs/development-status.md)
+- [Docker / 1Panel 部署、私钥、Redis 与回滚](./docs/docker-deployment.md)
+- [API / SDK 契约](./contracts/gateway-v1.md)
+- [HPKE、Redis、威胁边界](./docs/app-crypto-preview.md)
+- [开发路线图](./docs/roadmap.md) · [详细方案](./docs/implementation-plan.md) · [任务拆解与验收条件](./docs/task-backlog.md)
+- [真实 TXBoard 隔离 Staging 验收手册](./staging/README.md)
+- [安全边界和披露](./SECURITY.md)
 
-Run `npm run smoke:staging` with `GATEWAY_SMOKE_URL=https://<isolated-test-ingress>`
-to check a deployed Gateway. Optional `GATEWAY_SMOKE_USER_BEARER` enables
-read-only account/order checks. This is not a substitute for real browser login/CAPTCHA E2E.
-
-
-## Development plan after Phase 1
-
-The next work is **real TXBoard integration (M1 / Phase 1.5)**, not enabling experimental encryption or payment writes. For a concrete development sequence, dependencies, security gates and acceptance evidence:
-
-- **[Source-aligned Laravel API matrix (Chinese)](./docs/txboard-v1-source-contract.md)** — verified upstream code paths and outstanding live fixture/E2E work.
-- **[Detailed implementation plan (Chinese)](./docs/implementation-plan.md)** — phased architecture, cross-repository integration, security/threat model, safe transactions, optional encryption, theme SDK/runtime, performance targets and production rollout/rollback.
-- **[Issue-ready task backlog (Chinese)](./docs/task-backlog.md)** — GW-101 through GW-509 with priorities, responsible repositories, dependencies and measurable completion criteria.
-- **[Roadmap and milestones](./docs/roadmap.md)** — brief stage status and the immediate next tasks.
-- **[AirBuddy design lessons (Chinese)](./docs/airbuddy-design-reference.md)** — source-grounded comparison and safe adaptation plan for optional encryption, fast checkout, CAPTCHA, notifications and deployment. External project functionality is **not** claimed as implemented here.
-
-All later milestones are proposed work; Phase 1 CI passing does **not** establish production acceptance or that application-layer encryption is available.
-
-## Development status
-
-Phase 1 is an independently deployable compatibility slice. It is not automatically enabled by installing this repository; production integration with TXBoard and live end-to-end tests must happen separately.
-
-## Reproducible builds and Phase 1.5 testing
-
-- Runtime and CI target Node **22.23.2**, all npm workspaces use the committed
-  `package-lock.json`, and CI/container builds run `npm ci`.
-- `npm run test:browser` exercises a Chromium theme SDK flow through an actual
-  Gateway process and **controlled fake TXBoard HTTP endpoints**. It validates
-  browser CORS, public config, token routing, unauthorized behavior and order
-  reads but is **not** a real TXBoard/Laravel E2E test.
-- Real staging deployment instructions: [staging runbook](./staging/README.md).
-  It uses a private Docker network and dedicated test accounts and is opt-in.
-- No write/payment/subscription endpoints are added and production routes remain unchanged.
-
-## Docker application layer & HPKE preview
-
-**Docker Compose is the supported way to run this service.** See
-[Docker application + encryption preview](./docs/app-crypto-preview.md).
-`compose.yaml` keeps the Gateway private on a dedicated Docker network and
-does not publish additional ports; `compose.crypto.yaml` optionally mounts
-a persisted HPKE private key, with encrypted login usable through the Theme SDK.
-
-Additional fixed user-owned read endpoints: subscription summary, order detail,
-payment method display catalog (authenticated), and notices.
-No checkout/order/payment writes are exposed.
-**Real Laravel/MySQL/Redis acceptance and a third-party crypto review remain deferred.**
-
-## Redis + account workflow preview
-
-Current app preview adds `dashboard.stats()`, `orders.status(tradeNo)`,
-`auth.register(payload)` and `auth.sendEmailCode(payload)`. Both auth writes
-are **HPKE-only**, default disabled and require a private Redis safety store.
-See [Docker + Redis workflow guide](./docs/app-crypto-preview.md).
-Redis preserves nonce uniqueness across Gateway containers while healthy;
-do not treat this as payment idempotency or a substitute for Laravel controls.
+**产品决策：**允许先开发功能、推迟真实环境验收；这**不代表**生产发布门禁被取消。用户订单写入、扣款、自动支付与快速购买必须先在 Laravel 完成持久化幂等和沙箱/回调测试。

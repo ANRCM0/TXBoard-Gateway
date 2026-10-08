@@ -1,41 +1,53 @@
 # @txboard/theme-sdk
 
-Official, framework-agnostic TypeScript client for TXBoard Gateway `/gateway/v1`. Supports Vue/React/Next.js/standalone themes. Compiled into `dist` with `npm run build --workspace @txboard/theme-sdk`.
+Framework-agnostic TypeScript client for the Gateway's fixed `/gateway/v1` routes (Vue, React, Next.js, SPA). Currently a workspace package, **not yet published to npm**. Build with `npm run build --workspace @txboard/theme-sdk`.
 
 ```ts
-import { createTXBoardClient, GatewayApiError } from '@txboard/theme-sdk'
-const txboard = createTXBoardClient({
+import { createTXBoardClient } from '@txboard/theme-sdk'
+const api = createTXBoardClient({
   baseURL: '/gateway/v1',
-  getToken: () => session.userBearer,
+  getToken: () => session?.auth_data,  // caller owns storage/lifetime
+  encryptedLogin: true,                // optional HPKE + Redis Gateway only
 })
-const { site, theme } = await txboard.bootstrap()
-const plans = await txboard.plans.list()
-const profile = await txboard.user.profile()
+
+const { site, theme, security } = await api.bootstrap()
+const plans = await api.plans.list()
+const profile = await api.user.profile()
+const subscription = await api.user.subscription()
+const orders = await api.orders.list({status: 0})
+const detail = await api.orders.detail('ORDER-EXAMPLE')
+const status = await api.orders.status('ORDER-EXAMPLE')
+const stats = await api.dashboard.stats()
+const notices = await api.notices.list({current: 1, pageSize: 5})
+const payments = await api.payments.list()
 ```
 
-- No auth storage or privileged theme scopes; applications explicitly supply a session token.
-- Public calls (bootstrap/theme/plans/login) do not attach stored credentials.
-- `GatewayApiError` carries a stable error `code` and `status`, with optional `requestId`.
-- Money values retain TXBoard **cents** semantics. Do not convert in the SDK.
-- Order creation and payment are not exposed in Phase 1.
-- No global API interceptors, cookies, or unsafe arbitrary URL method.
-
-See [Gateway HTTP contract](../../contracts/gateway-v1.md).
-
-## Docker Gateway app layer and optional encryption
-
-`createTXBoardClient({ baseURL, getToken })` additionally exposes:
-`user.subscription()`, `orders.detail(tradeNo)`, `payments.list()` and
-`notices.list({current, pageSize})`. All require a user Bearer and do not
-provide transaction writes.
-
-To opt into experimental HPKE **login-request-only** sealing:
+登录：
 ```ts
-const sdk = createTXBoardClient({ encryptedLogin: true })
-await sdk.auth.login({ email: 'user@example.test', password: 'your-password' })
+const login = await api.auth.login({
+  email: 'user@example.test',
+  password: 'some-test-password',
+  turnstile_token: 'test-captcha-token',
+})
 ```
-The Docker Gateway must be running with `compose.crypto.yaml` and a persistent
-private JWK file. There is no silent downgrade on key discovery failure; use an
-HTTPS ingress in production. Browser frameworks should bundle the SDK via their
-normal Vite/Next/React toolchain, which resolves the `@hpke/core` dependency.
-This mode is not production-ready; see `docs/app-crypto-preview.md`.
+
+加密账户功能（**后端额外启用** `GATEWAY_ACCOUNT_WORKFLOWS_ENABLED=true`、Redis、HPKE，默认不可调用）：
+
+```ts
+const sent = await api.auth.sendEmailCode({
+  email: 'user@example.test',
+  turnstile_token: 'test-captcha-token',
+})
+const registered = await api.auth.register({
+  email: 'user@example.test', password: 'some-test-password', email_code: '123456',
+})
+```
+
+- `encryptedLogin: true` 只影响 `auth.login`；**注册/发码始终只走加密路径**，不会自动退回明文。
+- SDK 不保存密码、Bearer、cookie 或用户会话；敏感 token 必须由应用自行安全管理。公开接口不携带 bearer。
+- `GatewayApiError` 包含 `code`、HTTP `status`、可选 `requestId`。遇到 409/429/503 不要无脑自动重试密文写请求。
+- 套餐与订单金额沿用 TXBoard 的分单位；不在 SDK 中二次转换。
+- SDK 仅类型描述，不代替 Gateway/后端的运行时校验；SSR 必须为不同请求隔离 `getToken` 与客户实例。
+- 无订单创建、checkout、支付回调、管理员 API、订阅原始 Token 导出。
+
+[HTTP v1 契约](../../contracts/gateway-v1.md) · [Docker 运行方式](../../docs/docker-deployment.md) · [当前状态](../../docs/development-status.md)。

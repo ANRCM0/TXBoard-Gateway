@@ -1,4 +1,4 @@
-# Opt-in single-replica HPKE overlay. Add only after generating a private key.
+# Opt-in HPKE preview; requires reachable Redis replay store and a persisted private key.
 # docker compose -f compose.yaml -f compose.crypto.yaml up -d --build
 services:
   gateway:
@@ -13,7 +13,7 @@ services:
         uid: "1000"
         gid: "1000"
         mode: 0400
-    # Preview's anti-replay cache is process-local; do NOT scale this service.
+    # Replay is Redis-atomic across live replicas. Key rotation and Redis failover durability are NOT yet production-vetted.
 secrets:
   gateway-hpke:
     file: ${GATEWAY_HPKE_SECRET_FILE:-./secrets/gateway-hpke.json}

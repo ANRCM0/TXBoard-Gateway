@@ -1,9 +1,25 @@
 # TXBoard Gateway 任务清单与验收矩阵
 
-> 与 [完整开发方案](./implementation-plan.md) 配套，本表任务均为**待开发计划**，完成后须有可追溯的 PR 和验证记录。  
+> 与 [完整开发方案](./implementation-plan.md) 配套，本表保留**目标验收条件**，并非全部待开发；当前实现/未验收进度统一以 [开发状态台账](./development-status.md) 为准。  
 > 日期基线：2026-10-08；采用任务编号 `GW-1xx` ～ `GW-5xx`，可以直接转成 GitHub Issues。  
 > 优先级：P0 = 不能跳过的生产/安全前置；P1 = 阶段核心；P2 = 可随后优化。  
 > 责任仓库：`GW` = `ANRCM0/TXBoard-Gateway`；`TX` = `ANRCM0/TXBoard`；`DEP` = `ANRCM0/TXBoard-Deploy`。
+
+## 截至 2026-10-08 的实施进度（按严格验收口径）
+
+| 任务 | 实施结果 | 尚未完成的正式验收 |
+| --- | --- | --- |
+| GW-101/102 | Laravel 源码契约盘点、最小响应 Zod 校验与通用错误处理已合并（[#4](https://github.com/ANRCM0/TXBoard-Gateway/pull/4)） | 真实脱敏样本、完整 OpenAPI 3.1 |
+| GW-103 | 锁文件、Node 22、npm ci、SDK 打包和 CI 已有（[#5](https://github.com/ANRCM0/TXBoard-Gateway/pull/5)） | 依赖审计、安全发布门禁 |
+| GW-104/105 | Docker Staging 模板、Chromium + 模拟 Laravel HTTP E2E 已有（#5） | **真实 Laravel/MySQL/Redis/CAPTCHA E2E 未实施** |
+| GW-107 | Gateway 独立 Docker Compose、私有网络、HPKE/Redis overlay 已有（[#6](https://github.com/ANRCM0/TXBoard-Gateway/pull/6)、[#7](https://github.com/ANRCM0/TXBoard-Gateway/pull/7)） | TXBoard-Deploy 实际选配路由、真实回滚演练 |
+| GW-202/203/206 | Redis 原子 nonce 和账号维度限流、断连 fail-closed 测试已合并（#7） | 可信 IP/代理限流、生产失效演练、持续指标与多机故障转移 |
+| GW-301 | 订阅、订单明细、支付展示、通知等只读适配已合并（#6） | 真实后端契约验证 |
+| GW-307 | HPKE-only 注册和邮箱验证码（默认关闭）、Laravel 透传已合并（#7） | 真实注册、验证码、邮件/邀请策略全流程验证 |
+| GW-401～407 | HPKE 密文登录与 Redis 防重放**技术预览**已合并（#6/#7） | 威胁模型、独立审计、密钥双版本轮换、Redis 故障转移、发布门槛 |
+| GW-302～306/309～311 | **未开发**：订单创建、支付流程、交易持久化幂等、快速购买 | 全部支付与交易安全前置 |
+
+> “代码已实现”不等于原任务的全部验收条件已经满足。尤其真实环境验收是用户当前选择延期，不是通过或取消生产门禁。证据与下一阶段安排见 [开发状态台账](./development-status.md)。
 
 ## 共同 DoD（适用于每个任务）
 

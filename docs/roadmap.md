@@ -1,77 +1,35 @@
-# TXBoard Gateway Roadmap
+# TXBoard Gateway Roadmap（代码与正式验收分离）
 
-> **Current milestone:** Phase 1 implemented; Phase 1.5 (real TXBoard integration) **not completed**.  
-> This page is an overview. Engineering work should follow the [full implementation plan](./implementation-plan.md) and [issue-ready backlog and acceptance matrix](./task-backlog.md).  
-> Proposed schedule / gates are estimates, not production delivery promises.
+> 更新：2026-10-08。当前 main 已合并 PR #4～#7；真实 TXBoard/Laravel/MySQL/Redis 端到端验收**延期**。每阶段代码的存在不等于该阶段可以直接上线。详细状态见 [开发状态台账](./development-status.md)。
 
-Phase 1.5 source audit is in progress: the Laravel guest/CAPTCHA, login, plan,
-profile and order contracts are documented in [TXBoard V1 source matrix](./txboard-v1-source-contract.md).
-Public CAPTCHA bootstrap and minimal runtime response validation have a first
-implementation. **Real staging responses, browser E2E and rollback validation
-are still required for GW-101/102/104/105 acceptance.**
+## 阶段概览
 
-## Milestones and release gates
+| Milestone | 已落地代码 | 尚未满足的生产/验收条件 |
+| --- | --- | --- |
+| Phase 1 基线 | Gateway v1、固定上游白名单、Theme SDK、公开站点/主题/套餐与用户只读适配 | SDK 发布与完整真实样本 |
+| Phase 1.5 合约与部署 | 源码字段盘点、基础运行时 Zod 检查、npm lockfile/CI、Chromium 模拟浏览器、Docker Staging 模板 | OpenAPI 3.1、真实 Laravel E2E、TXBoard-Deploy 真实 opt-in 反代、回滚演练 |
+| Phase 2A Redis/安全 | **Redis SET NX PX nonce 防重放 + Lua 邮箱限流**、断线 503、容器私网 | 可信代理/IP 安全策略、生产告警、Redis 故障转移/HA、一致性与边缘限流 |
+| Phase 2B 用户业务 | 订阅/订单详情/状态、支付方法展示、通知、统计、**加密注册/验证码（默认 off）** | 真正的 TXBoard 邮件/验证码联调、订单创建和支付事务幂等（均未开放） |
+| Phase 3 加密 | 标准 HPKE 请求密文预览、公钥发现、SDK 自动封装、Redis nonce | 威胁模型、独立审计、密钥双版本轮换、响应策略、切主恢复 |
+| Phase 4 主题生态 | 跨框架 TS SDK 基础、示例 | 主题包 v2、正式 SDK 发布、Vue/React/Next 真实 E2E、启用开关和兼容回退 |
 
-| Gate | Stage | State | Primary deliverable | Required evidence |
-| --- | --- | --- | --- | --- |
-| Baseline (0.1.x) | Phase 1 – gateway skeleton and theme SDK | **Implemented** | Versioned Hono read-only adapter, login, SDK and container | Mock tests, typecheck, build and Docker smoke |
-| M1 (preview) | Phase 1.5 – real TXBoard E2E and opt-in connection | **Planned** | Actual Laravel/Vue integration + deploy rollback | Real TXBoard fixtures, browser E2E, CI, optional routing |
-| M2 | Phase 2A – security and observability | **Planned** | Redis limits, trusted proxy, redacted logs and alerting | Multi-instance/failure-injection/security tests |
-| M3 | Phase 2B – transactions and user API | **Planned** | Read API expansion + Laravel-backed order idempotency | Payment sandbox, repeated/parallel writes, no double charge |
-| M4 | Phase 3 – optional application-layer encryption | **Planned, conditional** | Vetted public-key-based request protection | ADR, security review, replay tests, key rotation |
-| M5 | Phase 4 – independent theme runtime and SDK ecosystem | **Planned** | SPA theme manifest v2, framework templates, compatibility gates | Vue/React/SSR tests, old theme compatibility and rollback |
+已合并的关键 PR：[合同安全 #4](https://github.com/ANRCM0/TXBoard-Gateway/pull/4) · [构建/E2E #5](https://github.com/ANRCM0/TXBoard-Gateway/pull/5) · [Docker/HPKE #6](https://github.com/ANRCM0/TXBoard-Gateway/pull/6) · [Redis/账户 #7](https://github.com/ANRCM0/TXBoard-Gateway/pull/7)。
 
-Phase 2A and 2B together implement the originally envisioned "security policy and write operations" phase; this split makes the security dependencies explicit. M4's encryption work may be rejected after threat-model review without blocking normal HTTPS use.
+## 当前执行顺序
 
-**External design reference:** AirBuddy inspired an opt-in SDK encryption experience, public checkout catalog, quick-purchase UX, scoped CAPTCHA and configurable notifications. These are explicitly **planned**, not in Phase 1; see the [AirBuddy adoption and rejection decisions](./airbuddy-design-reference.md). Associated new tasks: GW-209, GW-310, GW-311, GW-312.
+1. 处理 P0 **可信代理、Redis 故障转移、密钥轮换/撤销、生产安全审查**。
+2. 补足 P0 **真实 Laravel/MySQL/Redis、验证码/邮件、反代回滚与压测**。当前按要求暂缓，不得将“跳过”标记为“通过”。
+3. 在 TXBoard Laravel 内独立设计 **持久化订单幂等与支付状态机**（不能仅靠 Redis nonce 取代）。
+4. 完整 OpenAPI + SDK 正式发布、主题运行时适配与用户业务闭环。
+5. 部署试点、故障演练与生产 Go/No-Go 审核。
 
-## Phase 1 — baseline (existing code)
+## 明确不开放的操作
 
-- [x] Initialize independent GitHub repository and npm workspaces
-- [x] Define Gateway v1 contract and draft independent-theme integration contract
-- [x] Implement fixed-path Hono upstream adapters
-- [x] Implement theme/site bootstrap, plans, login, user profile and read-only order list
-- [x] Add framework-agnostic buildable TypeScript SDK source and example
-- [x] Add CI typecheck, unit/security tests, package builds and Docker startup smoke
-- [ ] Full TXBoard Laravel + Vue + MySQL/Redis browser end-to-end validation (M1)
-- [ ] Opt-in reverse-proxy and rollback integration in deployment repository (M1)
-- [ ] Publish SDK to npm (M5 after API stability / release decision)
+- `POST /gateway/v1/orders` 仍为 405，不可创建新单。
+- Gateway 没有 checkout/cancel/pay webhook、余额变更、节点、管理端和订阅原始 Token 导出。
+- 未验证真实邮件验证码、邀请、CAPTCHA 或支付沙箱，不为前端绕过 Laravel 规则。
+- HPKE **不是** TLS 替代；Redis nonce 原子性不代表故障切主时永远不丢记录。
 
-## Immediate next steps (the first engineering PRs)
+## 资料
 
-1. **GW-101 / GW-102:** collect real, redacted TXBoard API responses and freeze the OpenAPI + error contracts.
-2. **GW-103:** produce reproducible npm lockfile and CI `npm ci` + SDK package checks.
-3. **GW-104 / GW-105:** construct isolated TXBoard E2E environment and run real browser login/profile/order smoke.
-4. **GW-107 / GW-108 / GW-109:** add a disabled-by-default optional proxy/SDK adapter and rehearse rollback.
-
-Only after M1 should Gateway assume additional production traffic. Security M2 gates precede any new sensitive write API; business writes require backend persistent idempotency. Encryption cannot replace TLS, rate limits, CAPTCHA or authorization.
-
-## Reference docs
-
-- [Detailed implementation and rollout plan](./implementation-plan.md)
-- [Task IDs, dependencies and acceptance criteria](./task-backlog.md)
-- [Architecture and trust boundaries](./architecture.md)
-- [Current Gateway v1 HTTP contract](../contracts/gateway-v1.md)
-- [Independent theme integration draft](../contracts/theme-integration-v1.md)
-- [AirBuddy design reference, security boundaries and phase mapping](./airbuddy-design-reference.md)
-- [Security statement](../SECURITY.md)
-
-## GW-103–105 reproducible E2E work
-
-- GW-103: Node 22.23.2; committed npm workspace lockfile; `npm ci` for Actions and Docker build; `npm pack --dry-run`.
-- GW-104: reusable private-network Gateway staging overlay and operator runbook, never public port 8787.
-- GW-105: CI Chromium + real browser execution of the SDK/guest/auth/profile/order **against a controlled fake Laravel upstream**.
-- This mock browser CI does **not** satisfy the real Laravel/MySQL/Redis or third-party CAPTCHA E2E release gates. Separate staging acceptance remains required.
-
-## 2026-10 Docker app & encryption preview
-
-The isolated Docker Gateway now has additional **read-only** user application
-capabilities and an optional HPKE login request encryption prototype
-([implementation / operational boundaries](./app-crypto-preview.md)).
-CI validates Node 22 builds, unit tests, Chromium E2E against a fake upstream, Docker
-image and Compose syntax. Existing Laravel/Proxy routes are untouched.
-
-**Go/No-Go status is unchanged:** actual Laravel staging acceptance remains
-skipped/deferred at user request; Phase 2 distributed abuse protection and Phase 3
-crypto production reviews remain outstanding. Do not interpret a passing mock CI
-as a production release.
+[项目现状](./development-status.md) · [Docker Runbook](./docker-deployment.md) · [业务/API 契约](../contracts/gateway-v1.md) · [任务与验收](./task-backlog.md) · [设计方案（保留原始规划）](./implementation-plan.md) · [安全边界](../SECURITY.md) · [AirBuddy 设计参考](./airbuddy-design-reference.md)。
