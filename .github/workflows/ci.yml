@@ -2,7 +2,7 @@ name: Gateway Docker App + HPKE CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/app-workflows-redis-replay]
   pull_request:
   workflow_dispatch:
 
@@ -60,11 +60,13 @@ jobs:
           GATEWAY_DOCKER_NETWORK: txboard-gateway-test-network
           TXBOARD_UPSTREAM_URL: https://txboard.example
           GATEWAY_ALLOWED_ORIGINS: https://theme.example
+          GATEWAY_REDIS_URL: redis://gateway-redis:6379
         run: |
           docker compose -f compose.yaml config --quiet
           mkdir -p secrets
           printf '%s\n' '{"kty":"EC","crv":"P-256","x":"fixture","y":"fixture","d":"fixture"}' > secrets/gateway-hpke.json
           docker compose -f compose.yaml -f compose.crypto.yaml config --quiet
+          docker compose -f compose.yaml -f compose.crypto.yaml -f compose.redis.yaml config --quiet
           ! docker compose -f compose.yaml config | grep -Eq 'published:|host_port:'
           ! docker compose -f compose.yaml -f compose.crypto.yaml config | grep -Eq 'published:|host_port:'
           # This fixture is not an HPKE key; remove it before the real key smoke.
