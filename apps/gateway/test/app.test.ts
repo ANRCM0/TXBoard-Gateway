@@ -166,6 +166,17 @@ describe('gateway security and TXBoard v1 adapters', () => {
     expect(payload.error.message).toBe('Invalid credentials')
   })
 
+  it('preserves backend rate limiting and validation errors as distinct statuses', async () => {
+    const limited = mockFetch({ status: 'fail', message: 'Too many attempts' }, 429)
+    const result = await createGatewayApp(config, limited).request('/gateway/v1/plans')
+    expect(result.status).toBe(429)
+    expect((await dataOf(result)).error.message).toBe('Too many attempts')
+
+    const validation = mockFetch({ status: 'fail', message: 'Invalid input' }, 422)
+    const rejected = await createGatewayApp(config, validation).request('/gateway/v1/plans')
+    expect(rejected.status).toBe(422)
+  })
+
   it('returns a stable unavailable code when the upstream connection fails', async () => {
     const fetcher = vi.fn(async () => { throw new Error('network address with secrets') })
     const res = await createGatewayApp(config, fetcher).request('/gateway/v1/plans')
@@ -176,7 +187,7 @@ describe('gateway security and TXBoard v1 adapters', () => {
   it('rejects unbounded responses even without Content-Length', async () => {
     const fetcher = mockFetch(ok({ text: 'x'.repeat(2000) }))
     const res = await createGatewayApp({ ...config, maxResponseBytes: 500 }, fetcher).request('/gateway/v1/plans')
-    expect([413, 502]).toContain(res.status)
+    expect(res.status).toBe(502)
     expect((await dataOf(res)).ok).toBe(false)
   })
 })
