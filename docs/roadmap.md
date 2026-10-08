@@ -62,3 +62,16 @@ Only after M1 should Gateway assume additional production traffic. Security M2 g
 - GW-104: reusable private-network Gateway staging overlay and operator runbook, never public port 8787.
 - GW-105: CI Chromium + real browser execution of the SDK/guest/auth/profile/order **against a controlled fake Laravel upstream**.
 - This mock browser CI does **not** satisfy the real Laravel/MySQL/Redis or third-party CAPTCHA E2E release gates. Separate staging acceptance remains required.
+
+## 2026-10 Docker app & encryption preview
+
+The isolated Docker Gateway now has additional **read-only** user application
+capabilities and an optional HPKE login request encryption prototype
+([implementation / operational boundaries](./app-crypto-preview.md)).
+CI validates Node 22 builds, unit tests, Chromium E2E against a fake upstream, Docker
+image and Compose syntax. Existing Laravel/Proxy routes are untouched.
+
+**Go/No-Go status is unchanged:** actual Laravel staging acceptance remains
+skipped/deferred at user request; Phase 2 distributed abuse protection and Phase 3
+crypto production reviews remain outstanding. Do not interpret a passing mock CI
+as a production release.

@@ -49,3 +49,16 @@ The Gateway is a **transport/presentation compatibility adapter**, not a separat
 ## Later phases
 
 Phase 2: Redis-backed rate limits; idempotency for order creation; bot defense, structured redacted audit; optional secure session architecture. Phase 3: reviewed optional application-layer encryption with public-key bootstrap, replay defense and key rotation. Phase 4: automated Theme Runtime compatibility negotiation, end-to-end against TXBoard fixtures, production rollout gating.
+
+## Incremental app & crypto preview (not production gate clearance)
+
+Docker Compose is the supported Gateway operational unit. Extra user-facing
+reads are **explicit static allowlist** operations with Sanctum Bearer passed
+only to Laravel. The subscription summary intentionally excludes credential
+fields; order details are looked up by the authenticated user's backend query.
+
+The opt-in HPKE login request path never stores a browser-shared symmetric key:
+it publishes only the P-256 public key and loads the server private JWK from an
+isolated Docker file secret. It does not encrypt responses or guarantee replay
+protection across replica/restart boundaries. TLS, CAPTCHA, server identity,
+rate limiting and transaction idempotency remain separate controls.
