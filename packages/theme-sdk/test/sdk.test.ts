@@ -8,7 +8,8 @@ describe('@txboard/theme-sdk v1', () => {
   it('loads bootstrap and plans without sending bearer tokens', async () => {
     const fetchImpl = vi.fn(async (url: unknown) => {
       if (String(url).endsWith('bootstrap')) return response({
-        site: { name: 'TXBoard' }, theme: { name: 'Nova', config: {} }, capabilities: [],
+        site: { name: 'TXBoard' }, theme: { name: 'Nova', config: {} },
+        security: { captcha: { enabled: false, type: null, siteKey: null } }, capabilities: [],
       })
       return response([{ id: 1, name: 'Monthly', month_price: 500 }])
     })

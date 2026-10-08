@@ -66,9 +66,16 @@ export function asRecord(value: unknown): Record<string, unknown> {
     : {}
 }
 
-function sanitizedMessage(value: unknown): string {
-  if (typeof value !== 'string') return 'Upstream request rejected'
-  return value.slice(0, 240) || 'Upstream request rejected'
+function publicErrorMessage(status: number): string {
+  // Never echo upstream messages: a plugin/exception may contain PII or secrets.
+  switch (status) {
+    case 401: return 'Authentication failed'
+    case 403: return 'Access denied'
+    case 404: return 'Resource not found'
+    case 422: return 'Invalid request data'
+    case 429: return 'Too many requests'
+    default: return status >= 500 ? 'Upstream request failed' : 'Upstream request rejected'
+  }
 }
 
 export async function upstreamRequest(
@@ -122,9 +129,14 @@ export async function upstreamRequest(
     }
     const record = asRecord(payload)
     // Never swallow a TXBoard application-level error with HTTP 200.
-    if (!response.ok || (typeof record.status === 'string' && record.status !== 'success')) {
+    if (!response.ok || record.status === 'fail') {
       const status = response.status >= 400 ? response.status : 400
-      throw new GatewayFailure('UPSTREAM_ERROR', status, status >= 500 ? 'Upstream request failed' : sanitizedMessage(record.message))
+      throw new GatewayFailure('UPSTREAM_ERROR', status, publicErrorMessage(status))
+    }
+    // An unknown status is not a TXBoard business failure. Treat its
+    // response as a broken contract rather than manufacturing HTTP 400.
+    if (Object.hasOwn(record, 'status') && record.status !== 'success') {
+      throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
     }
     if (record.status === 'success') {
       if (!Object.hasOwn(record, 'data')) {
@@ -132,8 +144,13 @@ export async function upstreamRequest(
       }
       return record.data
     }
-    // Legacy TXBoard endpoints may return {data, total} directly.
-    return payload
+    // Only the known legacy paginator format may omit a status envelope.
+    // Unknown successful bodies must not masquerade as valid domain data.
+    if (Array.isArray(record.data) && typeof record.total === 'number'
+      && Number.isFinite(record.total) && record.total >= 0) {
+      return record.data
+    }
+    throw new GatewayFailure('UPSTREAM_ERROR', 502, 'Unexpected upstream response shape')
   } catch (err) {
     if (err instanceof GatewayFailure) return Promise.reject(err)
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {

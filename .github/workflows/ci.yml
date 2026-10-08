@@ -22,6 +22,8 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Typecheck, test and build Gateway and SDK
         run: npm run check
+      - name: Validate SDK package contents
+        run: npm pack --dry-run --workspace @txboard/theme-sdk
       - name: Smoke-test compiled service startup validation
         run: |
           if TXBOARD_UPSTREAM_URL= node apps/gateway/dist/index.js >/tmp/txboard-gateway-boot.log 2>&1; then

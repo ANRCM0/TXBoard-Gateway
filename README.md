@@ -67,10 +67,21 @@ For protected requests provide a `getToken` callback. `auth.login()` returns the
 
 See [theme integration](./contracts/theme-integration-v1.md), [API contract](./contracts/gateway-v1.md), [architecture](./docs/architecture.md) and [security expectations](./SECURITY.md).
 
+For Phase 1.5, `GET /gateway/v1/bootstrap` includes the allowlisted public CAPTCHA
+type and site key. Themes must fail closed if CAPTCHA is enabled but lacks a
+supported type/key. The login response is narrowed to user-session fields and
+never exposes TXBoard admin `secure_path` or legacy tokens.
+
+Run `npm run smoke:staging` with `GATEWAY_SMOKE_URL=https://<isolated-test-ingress>`
+to check a deployed Gateway. Optional `GATEWAY_SMOKE_USER_BEARER` enables
+read-only account/order checks. This is not a substitute for real browser login/CAPTCHA E2E.
+
+
 ## Development plan after Phase 1
 
 The next work is **real TXBoard integration (M1 / Phase 1.5)**, not enabling experimental encryption or payment writes. For a concrete development sequence, dependencies, security gates and acceptance evidence:
 
+- **[Source-aligned Laravel API matrix (Chinese)](./docs/txboard-v1-source-contract.md)** — verified upstream code paths and outstanding live fixture/E2E work.
 - **[Detailed implementation plan (Chinese)](./docs/implementation-plan.md)** — phased architecture, cross-repository integration, security/threat model, safe transactions, optional encryption, theme SDK/runtime, performance targets and production rollout/rollback.
 - **[Issue-ready task backlog (Chinese)](./docs/task-backlog.md)** — GW-101 through GW-509 with priorities, responsible repositories, dependencies and measurable completion criteria.
 - **[Roadmap and milestones](./docs/roadmap.md)** — brief stage status and the immediate next tasks.

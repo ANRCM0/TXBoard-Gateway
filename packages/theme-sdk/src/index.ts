@@ -14,7 +14,17 @@ export type GatewayEnvelope<T> = GatewaySuccess<T> | GatewayFailure
 
 export type ThemeData = { name: string; config: Record<string, unknown> }
 export type SiteData = { name: string; description: string; url: string; logo: string }
-export type BootstrapData = { site: SiteData; theme: ThemeData; capabilities: string[] }
+export type CaptchaConfig = {
+  enabled: boolean
+  type: 'turnstile' | 'recaptcha' | 'recaptcha-v3' | null
+  siteKey: string | null
+}
+export type BootstrapData = {
+  site: SiteData
+  theme: ThemeData
+  security: { captcha: CaptchaConfig }
+  capabilities: string[]
+}
 
 export type LoginPayload = {
   email: string
@@ -24,7 +34,7 @@ export type LoginPayload = {
   recaptcha_data?: string
   email_code?: string
 }
-export type UserAuth = { auth_data: string; is_admin?: boolean; token?: string }
+export type UserAuth = { auth_data: string; is_admin?: boolean | number }
 export type UserProfile = {
   email: string
   balance?: number

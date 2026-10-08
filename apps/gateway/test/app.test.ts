@@ -42,6 +42,7 @@ describe('gateway security and TXBoard v1 adapters', () => {
     expect(json.data).toEqual({
       site: { name: 'TXBoard Site', description: '', url: '', logo: 'https://cdn.example/logo.svg' },
       theme: { name: 'Nova', config: { theme_color: 'blue' } },
+      security: { captcha: { enabled: false, type: null, siteKey: null } },
       capabilities: ['auth.login', 'user.profile', 'plans.list', 'orders.list', 'theme.config'],
     })
     expect(res.headers.get('access-control-allow-origin')).toBe('https://theme.example')
@@ -53,6 +54,32 @@ describe('gateway security and TXBoard v1 adapters', () => {
     const fetcher = mockFetch(ok({ frontend_theme: 'TXBoard', theme_config: { background_url: 'https://cdn.example/x.png' } }))
     const res = await createGatewayApp(config, fetcher).request('/gateway/v1/theme/config')
     expect((await dataOf(res)).data).toEqual({ name: 'TXBoard', config: { background_url: 'https://cdn.example/x.png' } })
+  })
+
+  it('maps CAPTCHA metadata from public Laravel config without revealing secret keys', async () => {
+    for (const [type, field] of [
+      ['turnstile', 'turnstile_site_key'],
+      ['recaptcha', 'recaptcha_site_key'],
+      ['recaptcha-v3', 'recaptcha_v3_site_key'],
+    ] as const) {
+      const fetcher = mockFetch(ok({
+        is_captcha: 1, captcha_type: type, [field]: 'public-site-key',
+        turnstile_secret_key: 'never-expose', recaptcha_key: 'never-expose',
+        theme_config: { accent: 'blue' },
+      }))
+      const res = await createGatewayApp(config, fetcher).request('/gateway/v1/bootstrap')
+      const data = (await dataOf(res)).data
+      expect(data.security.captcha).toEqual({ enabled: true, type, siteKey: 'public-site-key' })
+      expect(JSON.stringify(data)).not.toContain('never-expose')
+    }
+  })
+
+  it('does not silently disable CAPTCHA on missing or unsupported public configuration', async () => {
+    const fetcher = mockFetch(ok({ is_captcha: 1, captcha_type: 'new-plugin-captcha', turnstile_secret_key: 'private' }))
+    const res = await createGatewayApp(config, fetcher).request('/gateway/v1/bootstrap')
+    expect((await dataOf(res)).data.security.captcha).toEqual({
+      enabled: true, type: null, siteKey: null,
+    })
   })
 
   it('keeps plan prices as upstream cents and never unwraps arbitrary data structures', async () => {
@@ -74,6 +101,18 @@ describe('gateway security and TXBoard v1 adapters', () => {
     expect(url).toContain('/api/v1/passport/auth/login')
     expect(init.headers.has('Authorization')).toBe(false)
     expect(JSON.parse(init.body)).toEqual({ email: 'user@example.test', password: 'pass12345678', turnstile_token: 'captcha-token' })
+  })
+
+  it('never forwards admin secure_path or unrelated legacy tokens to a user theme', async () => {
+    const fetcher = mockFetch(ok({
+      auth_data: token, is_admin: true, secure_path: 'hidden-admin-route',
+      token: 'legacy-token',
+    }))
+    const res = await createGatewayApp(config, fetcher).request('/gateway/v1/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@example.test', password: 'pass12345678' }),
+    })
+    expect((await dataOf(res)).data).toEqual({ auth_data: token, is_admin: true })
   })
 
   it('blocks unknown login properties and invalid JSON before reaching upstream', async () => {
@@ -163,14 +202,35 @@ describe('gateway security and TXBoard v1 adapters', () => {
     expect(res.status).toBe(400)
     const payload = await dataOf(res)
     expect(payload.ok).toBe(false)
-    expect(payload.error.message).toBe('Invalid credentials')
+    expect(payload.error.message).toBe('Upstream request rejected')
+  })
+
+  it('does not echo credential-shaped data from upstream error messages', async () => {
+    const fetcher = mockFetch({ status: 'fail', message: 'password=secret admin_key=private' }, 422)
+    const res = await createGatewayApp(config, fetcher).request('/gateway/v1/plans')
+    expect(res.status).toBe(422)
+    expect((await dataOf(res)).error.message).toBe('Invalid request data')
+  })
+
+  it('rejects malformed successful envelopes and invalid core business fields', async () => {
+    for (const payload of [
+      { status: 1, data: [{ id: 1, name: 'Plan' }] },
+      { data: [{ id: 1, name: 'Plan' }] },
+      ok({ invalid: true }),
+      ok([{ id: 'not-numeric', name: 'Plan' }]),
+    ]) {
+      const fetcher = mockFetch(payload)
+      const res = await createGatewayApp(config, fetcher).request('/gateway/v1/plans')
+      expect(res.status).toBe(502)
+      expect((await dataOf(res)).ok).toBe(false)
+    }
   })
 
   it('preserves backend rate limiting and validation errors as distinct statuses', async () => {
     const limited = mockFetch({ status: 'fail', message: 'Too many attempts' }, 429)
     const result = await createGatewayApp(config, limited).request('/gateway/v1/plans')
     expect(result.status).toBe(429)
-    expect((await dataOf(result)).error.message).toBe('Too many attempts')
+    expect((await dataOf(result)).error.message).toBe('Too many requests')
 
     const validation = mockFetch({ status: 'fail', message: 'Invalid input' }, 422)
     const rejected = await createGatewayApp(config, validation).request('/gateway/v1/plans')
