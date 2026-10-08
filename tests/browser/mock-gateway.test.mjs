@@ -3,6 +3,10 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
 import { build } from 'esbuild'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { generateKeyPairSync } from 'node:crypto'
 import { chromium } from 'playwright'
 
 const TEST_BEARER = 'Bearer fixture-session-abc123'
@@ -66,14 +70,29 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
       } else {
         result = upstreamEnvelope({ auth_data: TEST_BEARER, is_admin: false, secure_path: 'private-admin-route', token: 'legacy-token' })
       }
-    } else if (path === '/api/v1/user/info' || path === '/api/v1/user/order/fetch') {
+    } else if ([
+      '/api/v1/user/info', '/api/v1/user/order/fetch', '/api/v1/user/getSubscribe',
+      '/api/v1/user/order/detail', '/api/v1/user/order/getPaymentMethod',
+      '/api/v1/user/notice/fetch',
+    ].includes(path)) {
       if (req.headers.authorization !== TEST_BEARER) {
         status = 401
         result = { status: 'fail', message: 'Expired fixture session' }
+      } else if (path.endsWith('/info')) {
+        result = upstreamEnvelope({ email, balance: 1000 })
+      } else if (path.endsWith('/getSubscribe')) {
+        result = upstreamEnvelope({
+          plan_id: 1, plan: { name: 'Fixture Pro' }, u: 10, d: 20,
+          transfer_enable: 100, token: 'must-never-leak', subscribe_url: 'https://private.test',
+        })
+      } else if (path.endsWith('/order/detail')) {
+        result = upstreamEnvelope({ trade_no: 'fixture-order', status: 0, total_amount: 1200 })
+      } else if (path.endsWith('/getPaymentMethod')) {
+        result = upstreamEnvelope([{ id: 2, name: 'Fixture Card', config: { secret: 'private-payment-key' } }])
+      } else if (path.endsWith('/notice/fetch')) {
+        result = { data: [{ id: 7, title: 'Fixture Notice' }], total: 1 }
       } else {
-        result = upstreamEnvelope(path.endsWith('/info')
-          ? { email, balance: 1000 }
-          : [{ trade_no: 'fixture-order', status: 0, plan_id: 1, period: 'month_price', total_amount: 1200 }])
+        result = upstreamEnvelope([{ trade_no: 'fixture-order', status: 0, plan_id: 1, period: 'month_price', total_amount: 1200 }])
       }
     } else {
       status = 404
@@ -100,6 +119,12 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
   })
   t.after(() => frontend.close())
 
+  const keyDir = await mkdtemp(join(tmpdir(), 'txboard-gateway-hpke-'))
+  const keyFile = join(keyDir, 'test-hpke.json')
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+  await writeFile(keyFile, JSON.stringify(privateKey.export({ format: 'jwk' })), { mode: 0o600 })
+  t.after(() => rm(keyDir, { recursive: true, force: true }))
+
   const gatewayPort = await choosePort()
   const gateway = spawn(process.execPath, ['apps/gateway/dist/index.js'], {
     env: {
@@ -109,6 +134,8 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
       TXBOARD_UPSTREAM_URL: 'http://127.0.0.1:' + upstream.port,
       TXBOARD_ALLOW_PRIVATE_HTTP: 'true',
       GATEWAY_ALLOWED_ORIGINS: 'http://127.0.0.1:' + frontend.port,
+      GATEWAY_HPKE_MODE: 'optional',
+      GATEWAY_HPKE_KEY_FILE: keyFile,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -131,6 +158,10 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
   t.after(() => browser.close())
   const page = await browser.newPage()
   await page.goto('http://127.0.0.1:' + frontend.port)
+  let encryptedRequestBody = ''
+  page.on('request', req => {
+    if (req.url().includes('/secure/auth/login')) encryptedRequestBody = req.postData() || ''
+  })
   const result = await page.evaluate(async ({ gatewayPort, email, password }) => {
     const { createTXBoardClient } = await import('/sdk.js')
     let session = null
@@ -144,6 +175,17 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
     session = login.auth_data
     const profile = await api.user.profile()
     const orders = await api.orders.list({ status: 0 })
+    const subscription = await api.user.subscription()
+    const detail = await api.orders.detail('fixture-order')
+    const payments = await api.payments.list()
+    const notices = await api.notices.list({ current: 1, pageSize: 5 })
+    const encryptedApi = createTXBoardClient({
+      baseURL: 'http://127.0.0.1:' + gatewayPort + '/gateway/v1',
+      encryptedLogin: true,
+    })
+    const protectedLogin = await encryptedApi.auth.login({
+      email, password, turnstile_token: 'fixture-captcha',
+    })
     session = 'invalid-session-123'
     let expiredStatus
     try {
@@ -165,6 +207,13 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
       loginKeys: Object.keys(login).sort(),
       profileEmail: profile.email,
       orderNumber: orders[0]?.trade_no,
+      subscriptionName: subscription.planName,
+      leakedSubscriptionToken: JSON.stringify(subscription).includes('must-never-leak'),
+      detailNumber: detail.trade_no,
+      paymentName: payments[0]?.name,
+      leakedPaymentKey: JSON.stringify(payments).includes('private-payment-key'),
+      noticeTotal: notices.total,
+      encryptedLoginKeys: Object.keys(protectedLogin).sort(),
       expiredStatus,
       rejectedStatus,
       persistedAuth: Object.keys(localStorage).some(k => /auth|token/i.test(k)),
@@ -177,6 +226,17 @@ test('Chromium theme SDK works through Gateway with strict fake Laravel contract
   assert.deepEqual(result.loginKeys, ['auth_data', 'is_admin'])
   assert.equal(result.profileEmail, email)
   assert.equal(result.orderNumber, 'fixture-order')
+  assert.equal(result.subscriptionName, 'Fixture Pro')
+  assert.equal(result.leakedSubscriptionToken, false)
+  assert.equal(result.detailNumber, 'fixture-order')
+  assert.equal(result.paymentName, 'Fixture Card')
+  assert.equal(result.leakedPaymentKey, false)
+  assert.equal(result.noticeTotal, 1)
+  assert.deepEqual(result.encryptedLoginKeys, ['auth_data', 'is_admin'])
+  assert.ok(encryptedRequestBody.includes('"kid"'))
+  assert.ok(encryptedRequestBody.includes('"ct"'))
+  assert.ok(!encryptedRequestBody.includes(password))
+  assert.ok(!encryptedRequestBody.includes(email))
   assert.equal(result.expiredStatus, 401)
   assert.equal(result.rejectedStatus, 422)
   assert.equal(result.persistedAuth, false)
