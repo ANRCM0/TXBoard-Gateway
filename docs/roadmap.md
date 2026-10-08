@@ -17,6 +17,8 @@
 
 Phase 2A and 2B together implement the originally envisioned "security policy and write operations" phase; this split makes the security dependencies explicit. M4's encryption work may be rejected after threat-model review without blocking normal HTTPS use.
 
+**External design reference:** AirBuddy inspired an opt-in SDK encryption experience, public checkout catalog, quick-purchase UX, scoped CAPTCHA and configurable notifications. These are explicitly **planned**, not in Phase 1; see the [AirBuddy adoption and rejection decisions](./airbuddy-design-reference.md). Associated new tasks: GW-209, GW-310, GW-311, GW-312.
+
 ## Phase 1 — baseline (existing code)
 
 - [x] Initialize independent GitHub repository and npm workspaces
@@ -45,4 +47,5 @@ Only after M1 should Gateway assume additional production traffic. Security M2 g
 - [Architecture and trust boundaries](./architecture.md)
 - [Current Gateway v1 HTTP contract](../contracts/gateway-v1.md)
 - [Independent theme integration draft](../contracts/theme-integration-v1.md)
+- [AirBuddy design reference, security boundaries and phase mapping](./airbuddy-design-reference.md)
 - [Security statement](../SECURITY.md)

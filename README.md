@@ -74,6 +74,7 @@ The next work is **real TXBoard integration (M1 / Phase 1.5)**, not enabling exp
 - **[Detailed implementation plan (Chinese)](./docs/implementation-plan.md)** — phased architecture, cross-repository integration, security/threat model, safe transactions, optional encryption, theme SDK/runtime, performance targets and production rollout/rollback.
 - **[Issue-ready task backlog (Chinese)](./docs/task-backlog.md)** — GW-101 through GW-509 with priorities, responsible repositories, dependencies and measurable completion criteria.
 - **[Roadmap and milestones](./docs/roadmap.md)** — brief stage status and the immediate next tasks.
+- **[AirBuddy design lessons (Chinese)](./docs/airbuddy-design-reference.md)** — source-grounded comparison and safe adaptation plan for optional encryption, fast checkout, CAPTCHA, notifications and deployment. External project functionality is **not** claimed as implemented here.
 
 All later milestones are proposed work; Phase 1 CI passing does **not** establish production acceptance or that application-layer encryption is available.
 
