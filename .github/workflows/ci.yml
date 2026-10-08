@@ -2,7 +2,7 @@ name: Gateway Docker App + HPKE CI
 
 on:
   push:
-    branches: [main, feat/app-workflows-redis-replay]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
