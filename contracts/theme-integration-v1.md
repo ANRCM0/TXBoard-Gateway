@@ -2,6 +2,10 @@
 
 This contract **extends**, but does not replace, TXBoard Theme Package v1 (`config.json` + `dashboard.blade.php`). Existing themes continue working. Standalone SPA manifests and the SDK are opt-in capabilities for future versions.
 
+## Native TXAPI integration (target only)
+
+Current theme SDK uses `/gateway/v1` and legacy Laravel upstream `/api/v1`. The future optional BFF uses `/txapi/bff/v1` against fixed private Laravel `/txapi` operations, retaining the Gateway v1 JSON envelope while Native API uses a separate schema. Theme manifest v2 and SDK baseURL migration require explicit versioned release; existing packages are unaffected. See [Integration](../docs/txapi-integration.md).
+
 ## Separation of ownership
 
 1. TXBoard Theme Runtime owns selecting, installing and saving per-theme settings.

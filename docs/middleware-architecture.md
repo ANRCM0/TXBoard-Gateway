@@ -1,6 +1,10 @@
 # TXBoard Gateway 模块化中间件架构规范
 
-> **Status: Accepted as development target / NOT implemented（2026-10-09）**。本文定义未来重构的约束和验收准则；示例是设计草案，不代表当前 Gateway 已具备动态策略引擎或 IP 风控。现状见 [development-status](./development-status.md)。这是开发规范，不是生产审计报告。
+> **Status: CORE CODE IMPLEMENTED; REAL STAGING NOT ACCEPTED（2026-10-09）**。PR #10–#13 已合并目录拆分、静态路由策略、可信代理、双层限流及可观测/韧性；本文部分路径和阶段描述仍是原始设计。真实 Laravel、1Panel 信任链、HPKE 轮换与 /txapi/bff/v1 仍未完成。现状见 [development-status](./development-status.md)。这是开发规范，不是生产审计报告。
+
+## 和 TXBoard Native 的路径关系
+
+未来只服务 `/txapi/bff/v1/*`，不拦截全部 `/txapi/*`；当前仍使用 `/gateway/v1/*` 上游固定旧 `/api/v1/*`。Gateway v1 SDK 和 Laravel Native 响应结构不同；必须经 typed adapter 显式转换。详见 [Cross-repo ADR](./txapi-integration.md)。
 
 ## 1. 为什么选择模块化单体
 

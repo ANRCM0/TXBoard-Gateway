@@ -1,11 +1,30 @@
 # TXBoard Gateway 任务清单与验收矩阵
 
 > 与 [完整开发方案](./implementation-plan.md) 配套，本表保留**目标验收条件**，并非全部待开发；当前实现/未验收进度统一以 [开发状态台账](./development-status.md) 为准。  
-> 日期基线：2026-10-08；采用任务编号 `GW-1xx` ～ `GW-5xx`，可以直接转成 GitHub Issues。  
+> 日期基线：2026-10-08（2026-10-09 增补 GW-210～GW-218 状态）；采用任务编号 `GW-1xx` ～ `GW-5xx`，可以直接转成 GitHub Issues。  
 > 优先级：P0 = 不能跳过的生产/安全前置；P1 = 阶段核心；P2 = 可随后优化。  
 > 责任仓库：`GW` = `ANRCM0/TXBoard-Gateway`；`TX` = `ANRCM0/TXBoard`；`DEP` = `ANRCM0/TXBoard-Deploy`。
 
-## 截至 2026-10-08 的实施进度（按严格验收口径）
+## 当前阻断任务（2026-10-09）
+
+| ID | Priority | Owner | 现象与修复验收 |
+|---|---|---|---|
+| GW-607 | P0 | Gateway | 现有 CI `policies.test.ts` 中 disabledWrite POST orders 预期 405、实际 401（main 基线已失败）；修复全局无 Origin Bearer 拦截与 disabledWrite 执行顺序，保持 userRead 401、POST 零上游调用；完整 Verify/Browser/Container CI 通过后关闭。 |
+
+## TXAPI BFF 联合任务（G0–G5，新增）
+
+| Task | Owner | Gate |
+|---|---|---|
+| GW-601 G0 | GW+TX | 两仓目标契约、每个 operation mapping、方法/权限/DTO |
+| GW-602 G1 | GW+TX+DEP | 旧 /gateway/v1 真实 Laravel/MySQL/Redis/CAPTCHA 及代理/回退 |
+| GW-603 G2 | TX | Native public/auth/me/plans/orders，分页+所有权回归 |
+| GW-604 G3 | GW | BFF prefix、Native decoder、旧 v1 Envelope、SDK/contract fixtures |
+| GW-605 G4 | GW+DEP+TX | Edge 优先分流、私网、可信 CIDR、主题 flag、性能/回退 |
+| GW-606 G5 | GW+TX | 受支持调用方迁移、旧调用观测为零、退役公告 |
+
+见 [双仓 ADR](./txapi-integration.md)。订单/支付写入仍不可启用。
+
+## 截至 2026-10-08 的实施进度（历史快照）
 
 | 任务 | 实施结果 | 尚未完成的正式验收 |
 | --- | --- | --- |
@@ -59,23 +78,25 @@
 
 **M2 Go / No-Go：** GW-201~206 P0 全绿；未能证明多实例/断联策略时，不开启订单、注册、付款等新敏感写入口。新增 GW-209 仅在计划启用自托管 CAPTCHA 时成为该功能的强制前置，不能将其未完成说成已具备防重放。
 
-## 架构演进专项：GW-210～GW-218（2026-10-09；全部待开发）
+## 架构演进专项：GW-210～GW-218（GW-210～GW-214 已随 PR #10–#13 合并；正式验收单列）
 
-> 本组属于 M1/M2 交叉工程任务，采用 [模块化中间件规范](./middleware-architecture.md) 的同进程方案；**编号为待办，不表示代码已实现或生产已批准**。真实联调延期不影响先行开展保契约重构，但生产门禁维持不变。
+> 本组属于 M1/M2 交叉工程任务，采用 [模块化中间件规范](./middleware-architecture.md) 的同进程方案。**GW-210～GW-214 的代码已合并；GW-215 部分（单 kid）、GW-216～GW-218 仍待完成。** 代码合并不等于生产已批准；真实联调延期不影响先行开展保契约重构，但生产门禁维持不变。
 
-| ID | 优先级 | 责任 | 工作包 / 任务 | 可验证验收 | 依赖 |
-| --- | --- | --- | --- | --- | --- |
-| GW-210 | P0 | GW | ADR/目标模块边界冻结，列出现状与目标态差异 | docs 架构/策略/威胁模型一致，禁止多服务串联/任意插件，现有契约不变 | 当前 main |
-| GW-211 | P1 | GW | PR-A：拆分 app、routes、adapters、services，抽取无副作用 DTO | 全部原接口/错误码/默认 flag 对照测试，TypeScript/Vitest/Playwright mock CI 绿 | GW-210 |
-| GW-212 | P0 | GW | PR-B：静态路由策略与不可绕过的 global baseline | 各路由策略映射快照、非法组合、未知路径、越权/敏感写入负例 | GW-211 |
-| GW-213 | P0 | GW + DEP | PR-C：可信入口 IP/Host 与边缘+账户双层限流 | 假 XFF/Host/Origin 绕过拒绝，多副本、429/Retry-After 与误伤测试 | GW-201/204、GW-212 |
-| GW-214 | P0 | GW + DEP | PR-D：无敏感字段的 requestId、metrics、内部 readiness | 断连/超时/429/503 可观测；零密码/Bearer/email/body 日志；探针不泄配置 | GW-205、GW-212 |
-| GW-215 | P0 | GW | HPKE/Redis 共享安全状态和密钥轮换、故障切换 | nonce 跨副本原子；Redis 切主/丢状态测试；双 kid 轮换/吊销与 fail-closed | GW-212、GW-401～406 |
-| GW-216 | P0 | GW + TX + DEP | PR-E：真实 TXBoard Staging 回归 + Gateway/旧 API 回滚 | Laravel/MySQL/Redis/真实 CAPTCHA、代理安全、故障注入证据；当前延期 | GW-104/105/107/109、GW-212 |
-| GW-217 | P1 | GW + TX | Luma 首批公开/用户只读 SDK feature flag 适配 | plans/bootstrap/profile/orders 对照且关闭开关可回退；账户写默认关闭 | GW-216、GW-503 兼容约束 |
-| GW-218 | P2 | GW | 可选公开数据 TTL 缓存（默认 off） | 只对已审计字段缓存，计划 15–60 秒 TTL、失效/变更一致性/无隐私泄漏 | GW-211/212/214 |
+| ID | 优先级 | 责任 | 工作包 / 任务 | 可验证验收 | 依赖 | 状态 |
+| --- | --- | --- | --- | --- | --- | --- |
+| GW-210 | P0 | GW | ADR/目标模块边界冻结，列出现状与目标态差异 | docs 架构/策略/威胁模型一致，禁止多服务串联/任意插件，现有契约不变 | 当前 main | **已合并（#9 文档 + #10 代码）** |
+| GW-211 | P1 | GW | PR-A：拆分 app、routes、adapters、services，抽取无副作用 DTO | 全部原接口/错误码/默认 flag 对照测试，TypeScript/Vitest/Playwright mock CI 绿 | GW-210 | **已合并（#10）** |
+| GW-212 | P0 | GW | PR-B：静态路由策略与不可绕过的 global baseline | 各路由策略映射快照、非法组合、未知路径、越权/敏感写入负例 | GW-211 | **已合并（#11）** |
+| GW-213 | P0 | GW + DEP | PR-C：可信入口 IP/Host 与边缘+账户双层限流 | 假 XFF/Host/Origin 绕过拒绝，多副本、429/Retry-After 与误伤测试 | GW-201/204、GW-212 | **已合并（#12）** |
+| GW-214 | P0 | GW + DEP | PR-D：无敏感字段的 requestId、metrics、内部 readiness | 断连/超时/429/503 可观测；零密码/Bearer/email/body 日志；探针不泄配置 | GW-205、GW-212 | **已合并（#13）** |
+| GW-215 | P0 | GW | HPKE/Redis 共享安全状态和密钥轮换、故障切换 | nonce 跨副本原子；Redis 切主/丢状态测试；双 kid 轮换/吊销与 fail-closed | GW-212、GW-401～406 | **部分（nonce 跨副本原子已合并；双 kid 轮换/吊销未做）** |
+| GW-216 | P0 | GW + TX + DEP | PR-E：真实 TXBoard Staging 回归 + Gateway/旧 API 回滚 | Laravel/MySQL/Redis/真实 CAPTCHA、代理安全、故障注入证据；当前延期 | GW-104/105/107/109、GW-212 | **未做（按决策延期）** |
+| GW-217 | P1 | GW + TX | Luma 首批公开/用户只读 SDK feature flag 适配 | plans/bootstrap/profile/orders 对照且关闭开关可回退；账户写默认关闭 | GW-216、GW-503 兼容约束 | **未做** |
+| GW-218 | P2 | GW | 可选公开数据 TTL 缓存（默认 off） | 只对已审计字段缓存，计划 15–60 秒 TTL、失效/变更一致性/无隐私泄漏 | GW-211/212/214 | **未实现（策略表仅预留 `cache` 字段）** |
 
 **合并门槛：** PR-A/B 的文档/代码改造以兼容性和模拟 CI 验证为准；PR-C/D 的新增安全能力要通过负向/故障测试；PR-E 的真实集成通过才能申请生产流量。不得将 PR-A/B 的合并算作 Staging 验收。
+
+> **2026-10-09 状态更正：** GW-210～GW-214 的**代码**已随 PR #10–#13 合并，`verify`（Gateway 202 + SDK 9）全绿；GW-215 仅完成 nonce 跨副本原子部分，双 kid 轮换/吊销未做；GW-216～GW-218 未完成。以上仍**不构成**真实 Staging 验收或生产批准。
 
 ## M3：Phase 2B — 业务能力、后端交易幂等与支付隔离
 

@@ -1,6 +1,10 @@
 # TXBoard Gateway Roadmap（代码与正式验收分离）
 
-> 更新：2026-10-08。当前 main 已合并 PR #4～#7；真实 TXBoard/Laravel/MySQL/Redis 端到端验收**延期**。每阶段代码的存在不等于该阶段可以直接上线。详细状态见 [开发状态台账](./development-status.md)。
+> 更新：2026-10-09。当前 main 已合并 PR #4～#13，#10～#13 包含模块化/策略/可信入口/观测代码；真实 TXBoard/Laravel/MySQL/Redis 端到端验收**延期**。每阶段代码的存在不等于该阶段可以直接上线。详细状态见 [开发状态台账](./development-status.md)。
+
+## TXAPI Native 集成（G0–G5，目标未实施）
+
+G0 冻结双仓契约与 operation 映射 → G1 旧 Gateway/Laravel 真实 staging → G2 Laravel Native `/txapi` → G3 新 `/txapi/bff/v1` + BFF v1 SDK → G4 Edge/Deploy/主题 opt-in → G5 清理无消费者旧 URL。Laravel 仍拥有全部账户/交易/节点/插件业务权威；订单写入保持关闭。参阅 [集成开发方案](./txapi-integration.md)。
 
 ## 阶段概览
 
@@ -15,20 +19,26 @@
 
 已合并的关键 PR：[合同安全 #4](https://github.com/ANRCM0/TXBoard-Gateway/pull/4) · [构建/E2E #5](https://github.com/ANRCM0/TXBoard-Gateway/pull/5) · [Docker/HPKE #6](https://github.com/ANRCM0/TXBoard-Gateway/pull/6) · [Redis/账户 #7](https://github.com/ANRCM0/TXBoard-Gateway/pull/7)。
 
-## 架构演进专项：模块化中间件（2026-10-09，设计已确定，代码待实施）
+## 架构演进专项：模块化中间件（PR-A～PR-D 已合并；真实验收仍待完成）
 
 **目标架构：** 一个 Hono Gateway 进程 + 不可跳过的全局安全基线 + 编译期声明式路由策略 + 按需 Bearer/HPKE/Zod + Redis 分布式安全状态。避免多个网关微服务串联；不开放运行时任意 JS 插件。设计与测试细节见 [middleware-architecture](./middleware-architecture.md)。
 
 | 工作包 | 对应任务 | 当前状态 | 退出条件 |
 | --- | --- | --- | --- |
-| PR-A 保兼容拆分 app/routes/adapters | GW-210/211 | **待开发** | v1 契约/状态码/SDK/默认开关不变，现有 CI 绿 |
-| PR-B 策略表与强制安全基线 | GW-212 | **待开发** | 非法配置、未知路径、未授权/敏感操作负例覆盖 |
-| PR-C 可信代理/双层限流/Redis 强化 | GW-213/215 | **待开发** | 可信 IP、重放、断连、误伤与多副本测试 |
-| PR-D 日志指标和 readiness | GW-214 | **待开发** | 零敏感字段泄漏、指标与故障告警演练 |
+| PR-A 保兼容拆分 app/routes/adapters | GW-210/211 | **代码已合并（[#10](https://github.com/ANRCM0/TXBoard-Gateway/pull/10)）** | v1 契约/状态码/SDK/默认开关不变，现有 CI 绿 |
+| PR-B 策略表与强制安全基线 | GW-212 | **代码已合并（[#11](https://github.com/ANRCM0/TXBoard-Gateway/pull/11)）** | 非法配置、未知路径、未授权/敏感操作负例覆盖 |
+| PR-C 可信代理/双层限流/Redis 强化 | GW-213/215 | **代码已合并（[#12](https://github.com/ANRCM0/TXBoard-Gateway/pull/12)）；密钥双版本轮换仍缺** | 可信 IP、重放、断连、误伤与多副本测试 |
+| PR-D 日志指标和 readiness | GW-214 | **代码已合并（[#13](https://github.com/ANRCM0/TXBoard-Gateway/pull/13)）** | 零敏感字段泄漏、指标与故障告警演练 |
 | PR-E Luma 渐进接入与真实联调 | GW-216/217 | **待开发；真实联调按决策延期** | mock 与真实 Laravel Staging 分开记录，开关可回滚 |
-| 可选公开内容缓存 | GW-218 | **未启用** | 公开字段审计、TTL/失效和一致性测试 |
+| 可选公开内容缓存 | GW-218 | **未实现（策略表仅预留 `cache` 字段）** | 公开字段审计、TTL/失效和一致性测试 |
 
-可先实施 PR-A/B 等不依赖生产资源的兼容性重构；但**真实 Laravel/MySQL/Redis/CAPTCHA、可信代理、密码学与故障切换测试仍是生产阻断项**。架构提案和文档提交都不是已交付代码。
+PR-A～PR-D 的**代码**已随 #10–#13 合并并通过 mock CI（Gateway 202 + SDK 9 全绿）；但**真实 Laravel/MySQL/Redis/CAPTCHA、可信代理实网验证、密码学与故障切换测试仍是生产阻断项**。合并代码不等于 Staging 验收或生产批准。
+
+### v2 `/txapi/*` 演进（进行中）
+
+- [PR #14](https://github.com/ANRCM0/TXBoard-Gateway/pull/14)（**OPEN**）：TXAPI Native BFF 双仓集成设计文档。
+- [PR #15](https://github.com/ANRCM0/TXBoard-Gateway/pull/15)（**OPEN**）：v2 `/txapi/*` API 基础设施（`src/v2/` scope/dto/routes/capabilities，+1099 行）。
+- [PR #16](https://github.com/ANRCM0/TXBoard-Gateway/pull/16)（已合并）：修复 `disabledWrite` 路由被 CORS 凭证层抢答 401 的缺陷，恢复 405 语义。
 
 ## 当前执行顺序
 

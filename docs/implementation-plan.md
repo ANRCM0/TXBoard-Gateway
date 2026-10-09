@@ -15,6 +15,10 @@
 
 本节是**开发设计已决策，代码仍待实现**。以下历史阶段规划里的“进程”或 M1/M2 顺序表述，均以本节同进程架构和 [实际状态台账](./development-status.md) 为准；安全门禁与真实联调的要求没有取消。
 
+## 2026-10-09：TXAPI BFF 联合工作包（新优先级）
+
+未来由 TXBoard Laravel 独占除 `/txapi/bff/v1/*` 外的 `/txapi/*`，Hono Gateway 负责可选主题 BFF；当前 Gateway `/gateway/v1/*`→固定 `/api/v1/*` 不变。G0 契约、G1 真实旧链路验收、G2 TXBoard Native、G3 Gateway Adapter/SDK、G4 Edge 灰度、G5 退役详见 [TXAPI Integration](./txapi-integration.md)。PR #10–#13 已实现前面部分模块化/安全基础设施；以下“待做”章节为历史规划，不得以其否定当前源码，也不得把源码合并等同真实验收。
+
 ## 0. 目标、现状与范围
 
 **最终目标：**以后每个独立开发的 TXBoard 前端主题（Vue / React / Next.js / 纯 SPA）都能通过同一套 **Gateway Contract + Theme SDK** 访问 TXBoard；Gateway 作为可独立升级的 API 接入层，提供可审计的安全边界、流控与可选应用层负载加密，不复制 Laravel 的核心业务规则。
