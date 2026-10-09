@@ -1,5 +1,7 @@
 # TXBoard Gateway HTTP API — v1
 
+> **CURRENT / 已实现合同：/gateway/v1。** 未来 /txapi/bff/v1 见 [目标合同](./txapi-bff-target-v1.md)，目前尚未实施。
+>
 > **实现状态：**以下接口已有 Gateway 源码与模拟 CI 支持（截至 2026-10-08）；真实 TXBoard/Laravel/MySQL/Redis 联调**尚未验收**。本合同仅描述 Gateway 的固定接口，不更改 TXBoard 原 `/api/v1/*`、`/api/v2/*`、`/s/*`。
 
 ## 请求与错误格式

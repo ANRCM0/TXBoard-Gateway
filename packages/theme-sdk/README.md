@@ -1,6 +1,6 @@
 # @txboard/theme-sdk
 
-Framework-agnostic TypeScript client for the Gateway's fixed `/gateway/v1` routes (Vue, React, Next.js, SPA). Currently a workspace package, **not yet published to npm**. Build with `npm run build --workspace @txboard/theme-sdk`.
+Framework-agnostic TypeScript client for the Gateway's fixed `/gateway/v1` routes (Vue, React, Next.js, SPA). Future optional `/txapi/bff/v1` integration is **TARGET only** and retains the Gateway v1 `{ok,data,meta}` wire schema; see [integration](../../../docs/txapi-integration.md). Currently a workspace package, **not yet published to npm**. Build with `npm run build --workspace @txboard/theme-sdk`.
 
 ```ts
 import { createTXBoardClient } from '@txboard/theme-sdk'

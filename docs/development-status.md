@@ -1,6 +1,6 @@
 # TXBoard Gateway 开发状态台账
 
-> 更新时间：**2026-10-08**。此文档记录代码和 CI，**不是生产就绪证明**。默认分支 main。当前不接入真实 TXBoard 环境，真实联调的验收暂按产品决策**延期**。
+> 更新时间：**2026-10-09**；旧阶段记录为历史快照，以下新增最新 main 代码核查。此文档记录代码和 CI，**不是生产就绪证明**。默认分支 main。当前不接入真实 TXBoard 环境，真实联调的验收暂按产品决策**延期**。
 
 ## 一、合并记录与证据
 
@@ -12,6 +12,15 @@
 | [#7](https://github.com/ANRCM0/TXBoard-Gateway/pull/7) | Redis 原子 nonce、邮箱维度限流、加密注册/邮箱验证码、账户与订单状态 | [CI 37801251835](https://github.com/ANRCM0/TXBoard-Gateway/actions/runs/37801251835) |
 
 合并：#6 → main `de45e3b`；#7 → main `9e5b3c1`。之后文档变更见 Git 历史。主分支最终 CI 状态以 [Actions](https://github.com/ANRCM0/TXBoard-Gateway/actions) 当前记录为准。
+
+## 2026-10-09 合并进度更正（优先于 10/8 历史叙述）
+
+- [PR #10](https://github.com/ANRCM0/TXBoard-Gateway/pull/10)：Routes/Adapters/Services 拆分；
+- [PR #11](https://github.com/ANRCM0/TXBoard-Gateway/pull/11)：静态编译期路由策略及 boot-time 验证；
+- [PR #12](https://github.com/ANRCM0/TXBoard-Gateway/pull/12)：可信入口、IP/账号双层限流；
+- [PR #13](https://github.com/ANRCM0/TXBoard-Gateway/pull/13)：Readiness、Metrics、脱敏观测及熔断/重试等韧性能力。
+
+**真实 Laravel/MySQL/Redis/CAPTCHA 及 1Panel 部署/安全/回退仍未验收。** `/readyz` 当前的 upstream 探针是占位状态，不代表真实 Laravel 探测成功。TXBoard Native 未来路径为 `/txapi/bff/v1/*`，当前 `/gateway/v1/*` 未变。参阅 [双仓集成开发方案](./txapi-integration.md)。
 
 ## 二、交付层级：不要混淆三个状态
 

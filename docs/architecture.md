@@ -1,6 +1,10 @@
 # TXBoard Gateway 架构与信任边界
 
-> 设计决策：2026-10-09。**目标架构已经确定，但模块化重构、路由策略引擎及新增防护尚未实现。** 当前真实能力与验证状态以 [开发状态台账](./development-status.md) 为准。实施细节、示例代码和验收矩阵见 [模块化中间件架构规范](./middleware-architecture.md)。
+> 设计决策：2026-10-09。**PR #10–#13 已合并模块化、路由策略、可信入口/限流及观测/熔断代码；真实集成与未来 /txapi/bff/v1 尚未实施验收。** 当前真实能力与验证状态以 [开发状态台账](./development-status.md) 为准。实施细节、示例代码和验收矩阵见 [模块化中间件架构规范](./middleware-architecture.md)。
+
+## TXBoard Native 双仓 ADR-006（TARGET）
+
+未来可选 Gateway 仅处理 `/txapi/bff/v1/*`，其余 `/txapi/*` 由 Laravel Native 处理；现有 `/gateway/v1/*` 仍有效。管理员、Node、Agent、支付、插件等不经 BFF，Laravel 保留业务权威。详情见 [Integration](./txapi-integration.md)。
 
 ## 1. 核心决策（ADR：模块化单体）
 

@@ -2,6 +2,10 @@
 
 > 当前代码支持容器化配置，但**没有在真实 TXBoard 服务器执行部署或验收**。用于本地与隔离环境；生产之前必须完成安全/数据/回滚审核。以下仅操作 Gateway 自身，不影响旧 Laravel 容器、MySQL、Redis 或支付回调。
 
+## Future: 与 TXBoard Native 的 TXAPI 集成（尚未部署）
+
+未来只将 `/txapi/bff/v1/*` 分流到私网 Gateway，其余 `/txapi/*` 直连 TXBoard；BFF 匹配优先。当前 `/gateway/v1/*`、`/api/v1/*` 仍有效。Gateway 固定 upstream 应指向私有 TXBoard origin，不能回到相同公网反代导致环路。需独立审查 TXBoard Caddy 当前广泛可信 CIDR 配置、代理头安全和 Docker 私网，部署应可独立关闭 Gateway 而不影响原生业务。详见 [ADR](./txapi-integration.md)。以下当前部署步骤维持不变。
+
 ## 1. 网络结构
 
 ```text

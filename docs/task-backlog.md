@@ -5,7 +5,20 @@
 > 优先级：P0 = 不能跳过的生产/安全前置；P1 = 阶段核心；P2 = 可随后优化。  
 > 责任仓库：`GW` = `ANRCM0/TXBoard-Gateway`；`TX` = `ANRCM0/TXBoard`；`DEP` = `ANRCM0/TXBoard-Deploy`。
 
-## 截至 2026-10-08 的实施进度（按严格验收口径）
+## TXAPI BFF 联合任务（G0–G5，新增）
+
+| Task | Owner | Gate |
+|---|---|---|
+| GW-601 G0 | GW+TX | 两仓目标契约、每个 operation mapping、方法/权限/DTO |
+| GW-602 G1 | GW+TX+DEP | 旧 /gateway/v1 真实 Laravel/MySQL/Redis/CAPTCHA 及代理/回退 |
+| GW-603 G2 | TX | Native public/auth/me/plans/orders，分页+所有权回归 |
+| GW-604 G3 | GW | BFF prefix、Native decoder、旧 v1 Envelope、SDK/contract fixtures |
+| GW-605 G4 | GW+DEP+TX | Edge 优先分流、私网、可信 CIDR、主题 flag、性能/回退 |
+| GW-606 G5 | GW+TX | 受支持调用方迁移、旧调用观测为零、退役公告 |
+
+见 [双仓 ADR](./txapi-integration.md)。订单/支付写入仍不可启用。
+
+## 截至 2026-10-08 的实施进度（历史快照）
 
 | 任务 | 实施结果 | 尚未完成的正式验收 |
 | --- | --- | --- |
@@ -59,7 +72,7 @@
 
 **M2 Go / No-Go：** GW-201~206 P0 全绿；未能证明多实例/断联策略时，不开启订单、注册、付款等新敏感写入口。新增 GW-209 仅在计划启用自托管 CAPTCHA 时成为该功能的强制前置，不能将其未完成说成已具备防重放。
 
-## 架构演进专项：GW-210～GW-218（2026-10-09；全部待开发）
+## 架构演进专项：GW-210～GW-218（历史计划，部分已随 PR #10–#13 合并；正式验收单列）
 
 > 本组属于 M1/M2 交叉工程任务，采用 [模块化中间件规范](./middleware-architecture.md) 的同进程方案；**编号为待办，不表示代码已实现或生产已批准**。真实联调延期不影响先行开展保契约重构，但生产门禁维持不变。
 

@@ -1,6 +1,10 @@
 # TXBoard Gateway Roadmap（代码与正式验收分离）
 
-> 更新：2026-10-08。当前 main 已合并 PR #4～#7；真实 TXBoard/Laravel/MySQL/Redis 端到端验收**延期**。每阶段代码的存在不等于该阶段可以直接上线。详细状态见 [开发状态台账](./development-status.md)。
+> 更新：2026-10-09。当前 main 已合并 PR #4～#13，#10～#13 包含模块化/策略/可信入口/观测代码；真实 TXBoard/Laravel/MySQL/Redis 端到端验收**延期**。每阶段代码的存在不等于该阶段可以直接上线。详细状态见 [开发状态台账](./development-status.md)。
+
+## TXAPI Native 集成（G0–G5，目标未实施）
+
+G0 冻结双仓契约与 operation 映射 → G1 旧 Gateway/Laravel 真实 staging → G2 Laravel Native `/txapi` → G3 新 `/txapi/bff/v1` + BFF v1 SDK → G4 Edge/Deploy/主题 opt-in → G5 清理无消费者旧 URL。Laravel 仍拥有全部账户/交易/节点/插件业务权威；订单写入保持关闭。参阅 [集成开发方案](./txapi-integration.md)。
 
 ## 阶段概览
 
@@ -15,7 +19,7 @@
 
 已合并的关键 PR：[合同安全 #4](https://github.com/ANRCM0/TXBoard-Gateway/pull/4) · [构建/E2E #5](https://github.com/ANRCM0/TXBoard-Gateway/pull/5) · [Docker/HPKE #6](https://github.com/ANRCM0/TXBoard-Gateway/pull/6) · [Redis/账户 #7](https://github.com/ANRCM0/TXBoard-Gateway/pull/7)。
 
-## 架构演进专项：模块化中间件（2026-10-09，设计已确定，代码待实施）
+## 架构演进专项：模块化中间件（PR #10–#13 已有代码；真实验收仍待完成）
 
 **目标架构：** 一个 Hono Gateway 进程 + 不可跳过的全局安全基线 + 编译期声明式路由策略 + 按需 Bearer/HPKE/Zod + Redis 分布式安全状态。避免多个网关微服务串联；不开放运行时任意 JS 插件。设计与测试细节见 [middleware-architecture](./middleware-architecture.md)。
 
