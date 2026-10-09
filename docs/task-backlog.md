@@ -5,6 +5,12 @@
 > 优先级：P0 = 不能跳过的生产/安全前置；P1 = 阶段核心；P2 = 可随后优化。  
 > 责任仓库：`GW` = `ANRCM0/TXBoard-Gateway`；`TX` = `ANRCM0/TXBoard`；`DEP` = `ANRCM0/TXBoard-Deploy`。
 
+## 当前阻断任务（2026-10-09）
+
+| ID | Priority | Owner | 现象与修复验收 |
+|---|---|---|---|
+| GW-607 | P0 | Gateway | 现有 CI `policies.test.ts` 中 disabledWrite POST orders 预期 405、实际 401（main 基线已失败）；修复全局无 Origin Bearer 拦截与 disabledWrite 执行顺序，保持 userRead 401、POST 零上游调用；完整 Verify/Browser/Container CI 通过后关闭。 |
+
 ## TXAPI BFF 联合任务（G0–G5，新增）
 
 | Task | Owner | Gate |
