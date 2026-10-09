@@ -1,7 +1,8 @@
 import { lookup } from 'node:dns/promises'
 
 /**
- * GW-204: trusted-ingress IP allowlisting, header normalization and CORS hardening.
+ * GW-213 / GW-215: trusted-ingress IP allowlisting, header normalization and
+ * CORS hardening.
  *
  * Design rules:
  *  - Client IP is derived ONLY from the socket peer address; forwarded headers are
@@ -24,6 +25,31 @@ export type ProxyVerdict = {
   /** Reason for an untrusted verdict, for structured logs. */
   reason?: 'peer_not_trusted' | 'forged_headers' | 'no_headers'
 }
+
+/**
+ * Every header that lets a caller assert a different client identity, host,
+ * scheme or port. Present from a peer that is not an allowlisted ingress,
+ * each one of these is treated as a forgery attempt: the request is rejected
+ * before any handler runs and the value is never used to pick the limiting
+ * client IP. Whitelisting by name is deliberate — an unknown/absent header can
+ * never silently bypass the list.
+ */
+export const PROXY_HEADERS = [
+  'x-forwarded-for',
+  'x-forwarded-proto',
+  'x-real-ip',
+  'x-forwarded-host',
+  'x-forwarded-port',
+  'x-forwarded-server',
+  'x-forwarded-prefix',
+  'x-forwarded-uri',
+  'forwarded',
+] as const
+
+const HOP_BY_HOP = [
+  'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'te', 'trailer',
+  'proxy-authorization', 'proxy-connection',
+] as const
 
 /** Normalize a possibly bracketed / IPv6-mapped peer address. */
 export function normalizeIp(value: string): string {
@@ -157,23 +183,18 @@ export function ipMatches(allowlist: CompiledIpAllowlist, candidate: string): bo
   })
 }
 
-const PROXY_HEADERS = [
-  'x-forwarded-for',
-  'x-forwarded-proto',
-  'x-real-ip',
-  'x-forwarded-host',
-  'x-forwarded-port',
-  'x-forwarded-server',
-  'forwarded',
-] as const
-
-const HOP_BY_HOP = [
-  'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'te', 'trailer',
-  'proxy-authorization', 'proxy-connection',
-] as const
+/** The exact proxy/forwarding header names the gateway treats as identity claims. */
+export function proxyHeaderNames(): readonly string[] {
+  return PROXY_HEADERS
+}
 
 export function claimsForwarding(headers: Headers): boolean {
   return PROXY_HEADERS.some(h => headers.has(h))
+}
+
+/** The offending header names, for structured (name-only) denial logging. */
+export function forgedHeaderNames(headers: Headers): string[] {
+  return PROXY_HEADERS.filter(h => headers.has(h))
 }
 
 /**
@@ -203,12 +224,37 @@ export function evaluateRequest(
   const chain = xff.split(',').map(s => s.trim()).filter(Boolean).reverse()
   const fromChain = chain.find(ip => !ipMatches(allowlist, ip)) ?? null
   const realIp = headers.get('x-real-ip')
-  let clientIp: string
-  if (realIp) clientIp = normalizeIp(realIp)
-  else if (fromChain) clientIp = fromChain
-  else clientIp = chain.at(-1) ?? peer
-  if (!clientIp) clientIp = peer
+  // GW-215: a trusted-but-nonsense address must never become the client IP
+  // used for limiting, and must never be emitted upstream either. Only a
+  // parsable IP is honored; otherwise the chain/peer fallback is used.
+  const candidate = realIp ? normalizeIp(realIp) : (fromChain ?? chain.at(-1) ?? '')
+  const clientIp = isIpAddress(candidate) ? candidate : peer
   return { trusted: true, clientIp, claimedForwarded: true }
+}
+
+/**
+ * GW-215: an authenticated route must never be satisfied by a missing
+ * credential. A non-browser client may omit Origin, so CORS cannot authorize
+ * an authenticated route: the caller must combine this verdict with an actual
+ * bearer/credential check (the route layer owns that check).
+ *
+ * Scope note: the sealed `/gateway/v1/secure/auth/*` routes deliberately do
+ * NOT appear here — their credential lives inside the HPKE envelope (opened
+ * later, with replay protection), not in an Authorization header, so a Bearer
+ * check at this layer would reject every legitimate encrypted request.
+ */
+export function requiresCredentialProof(path: string): boolean {
+  return path.startsWith('/gateway/v1/user/')
+    || path.startsWith('/gateway/v1/orders')
+    || path.startsWith('/gateway/v1/payments')
+    || path.startsWith('/gateway/v1/dashboard/')
+    || path.startsWith('/gateway/v1/notices')
+}
+
+/** True when `value` parses as a plain (unbracketed) IPv4 or IPv6 address. */
+function isIpAddress(value: string): boolean {
+  if (!value) return false
+  return ipv4ToInt(value) !== null || ipv6Groups(value) !== null
 }
 
 /**
@@ -219,8 +265,8 @@ export function sanitizeForwardedHeaders(source: Headers, verdict: ProxyVerdict)
   const out = new Headers()
   for (const [name, value] of source.entries()) {
     const key = name.toLowerCase()
-    if (PROXY_HEADERS.includes(key as any)) continue
-    if (HOP_BY_HOP.includes(key as any)) continue
+    if (PROXY_HEADERS.includes(key as never)) continue
+    if (HOP_BY_HOP.includes(key as never)) continue
     out.set(name, value)
   }
   if (verdict.trusted && verdict.claimedForwarded) {

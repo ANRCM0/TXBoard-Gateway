@@ -159,6 +159,33 @@ export function resolveRoutePolicy(
   return best
 }
 
+/**
+ * GW-215: every code path that can limit a request MUST reach this predicate
+ * first. `ip` is the value the baseline middleware put on `__clientIp`, i.e.
+ * the socket peer address unless the peer is an allowlisted ingress. A
+ * non-empty peer is guaranteed, so a request is never silently unlimited.
+ */
+export function hasLimitableIdentity(ip: unknown): boolean {
+  return typeof ip === 'string' && ip.trim().length > 0
+}
+
+/**
+ * GW-215: the subject (account) dimension is the only thing that can stop a
+ * credential-stuffing campaign spread over many source addresses. It therefore
+ * fails CLOSED: whenever a policy declares a subject dimension, a request
+ * without a usable subject is rejected instead of being limited by IP only.
+ * Absent-subject requests still consume the IP slot (the counter was already
+ * advanced atomically), so probing the endpoint without an email cannot be
+ * used as an unlimited subject bypass.
+ */
+export function subjectDimensionEnforced(
+  policy: Pick<RouteRatePolicy, 'subjectFrom' | 'subjectLimit'>,
+  subject: string | undefined,
+): boolean {
+  if (!policy.subjectFrom || (policy.subjectLimit ?? 0) <= 0) return true
+  return Boolean(subject)
+}
+
 /** Keyed digest so key material is bounded-length and non-reversible. */
 export function digestIdentity(salt: string, value: string): string {
   return createHash('sha256').update(salt).update('\u0000').update(value).digest('hex').slice(0, 32)
@@ -168,6 +195,15 @@ export function digestIdentity(salt: string, value: string): string {
 export function retryAfterSeconds(retryAfterMs: number): number {
   if (!Number.isFinite(retryAfterMs) || retryAfterMs <= 0) return 1
   return Math.max(1, Math.ceil(retryAfterMs / 1000))
+}
+
+/**
+ * GW-215: an IPv6 literal contains ':' and an IPv4 dotted quad does not, so a
+ * key built as `<policy>:<dim>:<digest>` can never be mistaken for a key that
+ * leaked a raw address. Used by the key-hygiene assertions.
+ */
+export function rateLimitKey(policyId: string, dimension: 'ip' | 'acct', digest: string): string {
+  return `txbgw:v1:rl:${policyId}:${dimension}:${digest}`
 }
 
 /**
@@ -253,6 +289,13 @@ export interface RateDecision {
   subjectCount: number
   /** True when Redis failed and the route policy failed OPEN (degraded). */
   degraded: boolean
+  /**
+   * GW-215: why a request was rejected. 'ip' / 'subject' name the rejecting
+   * dimension so operators can tell a distributed attack from a single-account
+   * burst; 'missing_subject' means the policy declares an account dimension
+   * and the caller had no usable subject to enforce it with.
+   */
+  limitedBy?: 'ip' | 'subject' | 'missing_subject'
 }
 
 export interface RateLimiterStats {
@@ -260,6 +303,8 @@ export interface RateLimiterStats {
   limited: number
   degraded: number
   redisFailures: number
+  /** GW-215: requests rejected because the account dimension could not be enforced. */
+  missingSubject: number
 }
 
 type RedisEvalOptions = { keys: string[]; arguments: string[] }
@@ -275,7 +320,9 @@ const DUMMY_KEY = 'txbgw:v1:rl:none'
  * `eval`/`isReady` with the same reply shapes (node-redis reply semantics).
  */
 export class RedisRateLimiter {
-  private readonly stats: RateLimiterStats = { checks: 0, limited: 0, degraded: 0, redisFailures: 0 }
+  private readonly stats: RateLimiterStats = {
+    checks: 0, limited: 0, degraded: 0, redisFailures: 0, missingSubject: 0,
+  }
 
   private constructor(private readonly client: RedisLike) {}
 
@@ -312,14 +359,21 @@ export class RedisRateLimiter {
   async check(input: RateCheckInput): Promise<RateDecision> {
     const { policy, ip } = input
     this.stats.checks += 1
+    // GW-215: refuse to run unlimited. The baseline always sets a client IP,
+    // so a missing one means the caller bypassed the trust layer entirely.
+    if (!hasLimitableIdentity(ip)) {
+      throw new GatewayFailure('UPSTREAM_UNAVAILABLE', 503, 'Rate limiter identity unavailable')
+    }
     const now = Date.now()
     const member = `${now}-${randomBytes(8).toString('hex')}`
-    const ipKey = `txbgw:v1:rl:${policy.id}:ip:${digestIdentity(policy.id, ip)}`
+    // GW-215 key hygiene: both dimensions are addressed by a keyed digest of
+    // the identity, so a raw email, bearer token or IP never enters Redis.
+    const ipKey = rateLimitKey(policy.id, 'ip', digestIdentity(policy.id, ip))
     const subjectLimit = policy.subjectFrom && input.subject
       ? (policy.subjectLimit ?? 0)
       : 0
     const subjectKey = subjectLimit > 0
-      ? `txbgw:v1:rl:${policy.id}:acct:${digestIdentity(policy.id, input.subject!)}`
+      ? rateLimitKey(policy.id, 'acct', digestIdentity(policy.id, input.subject!))
       : DUMMY_KEY
 
     let reply: unknown
@@ -375,11 +429,29 @@ export class RedisRateLimiter {
     const subjectCount = Number(values[3])
     if (limited) {
       this.stats.limited += 1
+      // The rejecting dimension is whichever one had already filled up when
+      // the script rejected: the IP dimension is evaluated first.
       return {
         allowed: false,
         retryAfterMs: retryMs,
         retryAfterHeader: retryAfterSeconds(retryMs),
         ipCount, subjectCount, degraded: false,
+        limitedBy: ipCount >= policy.ipLimit ? 'ip' : 'subject',
+      }
+    }
+    // GW-215: an account-dimension policy is only enforceable when the caller
+    // supplied a subject. The IP slot was already consumed above, so a caller
+    // probing without an email cannot use this as an unlimited bypass — the
+    // request is rejected and the missing dimension is recorded.
+    if (!subjectDimensionEnforced(policy, input.subject)) {
+      this.stats.missingSubject += 1
+      this.stats.limited += 1
+      return {
+        allowed: false,
+        retryAfterMs: policy.subjectWindow,
+        retryAfterHeader: retryAfterSeconds(policy.subjectWindow),
+        ipCount, subjectCount, degraded: false,
+        limitedBy: 'missing_subject',
       }
     }
     return {
