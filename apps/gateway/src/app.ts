@@ -29,6 +29,13 @@ import { registerAccountRoutes } from './routes/account.js'
 import { registerUserRoutes } from './routes/user.js'
 import { registerOrdersRoutes } from './routes/orders.js'
 import type { RouteContext } from './routes/shared.js'
+import {
+  ROUTE_OPERATIONS,
+  activeRouteDefinitions,
+  validatePolicies,
+  type PolicyEnvironment,
+} from './config/policies.js'
+import { policyEnforcementMiddleware } from './middleware/policy.js'
 
 /**
  * app.ts — the single Hono instance and the composition root.
@@ -99,6 +106,18 @@ export function createGatewayApp(
   if (policy.accountWorkflows && (!crypto || !policy.limiter)) {
     throw new Error('Account workflows require both encryption and Redis rate limiter')
   }
+  // GW-212 / PR-B: the compile-time route policy table is the single source of
+  // truth for a route's posture. Validate it BEFORE any Hono instance exists
+  // so an illegal combination fails the boot closed instead of silently
+  // weakening one route. `secureRegister` / `secureEmailCode` are only live
+  // when HPKE, Redis and GATEWAY_ACCOUNT_WORKFLOWS_ENABLED are all present.
+  const policyEnvironment: PolicyEnvironment = {
+    replayStore: Boolean(crypto),
+    hpke: Boolean(crypto),
+    redis: Boolean(policy.limiter),
+    accountWorkflows: Boolean(policy.accountWorkflows),
+  }
+  validatePolicies(activeRouteDefinitions(policyEnvironment), policyEnvironment, ROUTE_OPERATIONS)
   const allowlist: CompiledIpAllowlist = compileIpAllowlist(policy.trustedIngress || '')
   const allowedHosts = (policy.allowedHosts || '').split(',').map(s => s.trim()).filter(Boolean)
   const app = new Hono<Bindings>()
@@ -212,6 +231,27 @@ export function createGatewayApp(
     if (c.req.method === 'OPTIONS') return c.body(null, 204)
     await next()
   })
+
+  // ================================ PR-B hook ================================
+  // GW-212: the declarative route policy layer. One middleware, registered once
+  // between the global baseline above and the route handlers below, enforces
+  // auth / request-envelope / limiter posture per the frozen table in
+  // config/policies.ts. It is the ONLY place a route's policy is decided, and
+  // it runs before every handler, so:
+  //   - bearer routes 401 on a missing Authorization header, before any
+  //     upstream call;
+  //   - hpke routes require a sealed envelope before any upstream call;
+  //   - disabledWrite (POST /gateway/v1/orders) answers 405 with zero upstream
+  //     calls;
+  //   - an unknown path or method is rejected here and can never fall through
+  //     to an upstream call.
+  // Nothing in this block may be disabled by a header, theme manifest, client
+  // capability or database theme config: the table is compile-time readonly.
+  // ===========================================================================
+  app.use(`${PREFIX}/*`, policyEnforcementMiddleware({
+    definitions: activeRouteDefinitions(policyEnvironment),
+    maxRequestBytes: config.maxRequestBytes,
+  }))
 
   app.get('/healthz', c => c.json({ status: 'ok', contract: CONTRACT_VERSION }))
 
