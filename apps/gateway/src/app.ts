@@ -27,6 +27,23 @@ import {
   BEARER_PATTERN,
   type ErrorStatus,
 } from './middleware/request-context.js'
+// PR-D hook — imports
+import {
+  checkReadiness,
+  configureObservability,
+  currentRequestTemplate,
+  failureReason,
+  isLoopbackAddress,
+  metricsTokenMatches,
+  bearerFrom,
+  observabilityState,
+  peerAddressOf,
+  readinessVerdict,
+  routeTemplate,
+  statusClass,
+  withRequestScope,
+  type ObservabilityState,
+} from './middleware/observability.js'
 import { registerPublicRoutes } from './routes/public.js'
 import { registerAccountRoutes } from './routes/account.js'
 import { registerUserRoutes } from './routes/user.js'
@@ -79,6 +96,165 @@ export type GatewayPolicy = {
 
 export type GatewayRateObserver = NonNullable<GatewayPolicy['onRateEvent']>
 
+/** PR-D hook — observability configuration accepted by createGatewayApp. */
+export type GatewayObservability = Partial<ObservabilityState>
+
+/**
+ * PR-D hook — install the observability middleware, /metrics and /readyz.
+ *
+ * This is the ONLY place in the app that knows about metrics and readiness:
+ * route handlers stay free of instrumentation, and the endpoints are
+ * deliberately mounted OUTSIDE the `/gateway/v1` contract surface so they can
+ * never be reached by a theme SDK.
+ */
+function installObservability(app: Hono<Bindings>, configured: GatewayObservability): void {
+  // An explicitly `undefined` field must fall back to the shared default, so an
+  // embedder can pass a partial configuration object without crashing.
+  const clean: GatewayObservability = {}
+  if (configured.metrics) clean.metrics = configured.metrics
+  if (configured.logger) clean.logger = configured.logger
+  if (configured.probes) clean.probes = configured.probes
+  if (configured.metricsToken !== undefined) clean.metricsToken = configured.metricsToken
+  const { metrics, logger, probes, metricsToken } = configureObservability(clean)
+  // The frozen contract version, published once as a gauge with a bounded label.
+  metrics.contractVersion.set({ version: CONTRACT_VERSION }, 1)
+
+  // ---- request/response instrumentation (global, runs for every path) ----
+  app.use('*', async (c, next) => {
+    const startedAt = process.hrtime.bigint()
+    const template = routeTemplate(c.req.path, c.req.method)
+    const method = c.req.method.toUpperCase()
+
+    try {
+      await withRequestScope(template, next)
+    } finally {
+      // The response path runs on success, on a handled failure and on an
+      // error that reached the global handler: metrics must never be skipped.
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000
+      const response = c.res as unknown as Response | undefined
+      const status = response?.status ?? 500
+      const labels = { operation: template, method, status_class: statusClass(status) }
+      metrics.requests.inc(labels)
+      metrics.requestDuration.observe(labels, durationMs / 1000)
+      if (status >= 500) {
+        metrics.serverErrors.inc({ operation: template, status_class: statusClass(status) })
+      }
+      if (status === 429) metrics.rateLimited.inc({ operation: template })
+      // Read the id AFTER the dispatch: this middleware is registered before
+      // the identity middleware, so the value is only available once the
+      // downstream chain has run.
+      logger.info('request.completed', {
+        requestId: c.get('requestId'), route: template, method, status, durationMs,
+        errorCode: errorCodeOf(c),
+      })
+    }
+  })
+
+  // ---- internal endpoints (never part of the public contract surface) ----
+  // The /metrics credential is captured per app instance, NOT read from the
+  // process-wide observability state on each request: a token-configured
+  // deployment and a loopback-only deployment in the same process must not
+  // inherit each other's access policy.
+  const metricsTokenForThisApp = configured.metricsToken
+  app.get('/metrics', async c => {
+    const peer = peerAddressOf(c.req.raw)
+    const presented = bearerFrom(c.req.header('Authorization'))
+    const token = metricsTokenForThisApp
+    const denied = token
+      ? !metricsTokenMatches(token, presented)
+      : !isLoopbackAddress(peer)
+    if (denied) {
+      // The denial never reveals whether a token is configured, nor anything
+      // about the deployment: status and body are identical in both modes.
+      logger.warn('metrics.denied', {
+        requestId: c.get('requestId'), route: '/metrics', method: 'GET', status: 403,
+        reason: token ? 'token' : 'not_loopback',
+      })
+      return new Response('Forbidden', {
+        status: 403,
+        headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' },
+      })
+    }
+    const body = metrics.render()
+    logger.info('metrics.served', {
+      requestId: c.get('requestId'), route: '/metrics', method: 'GET', status: 200,
+    })
+    return new Response(body, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    })
+  })
+
+  app.get('/readyz', async c => {
+    const snapshot = await checkReadiness(probes)
+    // Dependency reachability only: no URLs, ports, versions, keys or config.
+    const payload = {
+      status: readinessVerdict(snapshot) ? 'ready' : 'degraded',
+      dependencies: snapshot,
+    }
+    logger.info('readiness.reported', {
+      requestId: c.get('requestId'), route: '/readyz', method: 'GET', status: 200,
+      outcome: payload.status,
+    })
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    })
+  })
+}
+
+/**
+ * PR-D hook — associate a gateway error code with the request that produced
+ * it. The key is the Hono Context, not the Response: Hono re-wraps the
+ * response in `set res`, so a WeakMap keyed on Response would look up a
+ * different object than the one `fail()` stored into.
+ */
+const errorCodes = new WeakMap<object, string>()
+
+function errorCodeOf(holder: object | undefined): string | undefined {
+  return holder ? errorCodes.get(holder) : undefined
+}
+
+/**
+ * PR-D hook — wrap the upstream fetcher with duration, failure and timeout
+ * metrics. The failure classification is the frozen error code, never the
+ * upstream message: no URL, header or credential is recorded.
+ */
+function observeFetcher(fetcher: UpstreamFetcher): UpstreamFetcher {
+  const { metrics } = observabilityState()
+  return async (input, init) => {
+    const template = currentRequestTemplate() ?? 'unknown'
+    const startedAt = process.hrtime.bigint()
+    try {
+      const response = await fetcher(input, init)
+      metrics.upstreamDuration.observe(
+        { operation: template }, Number(process.hrtime.bigint() - startedAt) / 1e9,
+      )
+      return response
+    } catch (error) {
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000
+      const code = error instanceof GatewayFailure ? error.code : undefined
+      const status = error instanceof GatewayFailure ? error.status : 500
+      const reason = failureReason(code, status)
+      metrics.upstreamDuration.observe({ operation: template }, durationMs / 1000)
+      metrics.upstreamFailures.inc({ operation: template, reason: reason ?? 'other' })
+      if (reason === 'timeout') metrics.upstreamTimeouts.inc({ operation: template })
+      observabilityState().logger.error('upstream.failed', {
+        route: template, durationMs, errorCode: code, reason,
+      })
+      throw error
+    }
+  }
+}
+
 /**
  * GW-204 Host validation. Only a bare hostname (optionally with port) is
  * accepted; CR/LF, spaces, credentials, slashes, query and fragment are
@@ -101,12 +277,17 @@ function ok(c: GatewayContext, data: unknown, status: 200 | 201 = 200) {
 }
 
 function fail(c: GatewayContext, code: string, message: string, status: ErrorStatus) {
-  return c.json(failureEnvelope(c.get('requestId'), code, message), status)
+  const response = c.json(failureEnvelope(c.get('requestId'), code, message), status)
+  // PR-D hook: the frozen error code is the ONLY classification that may be
+  // logged; it is attached to the context so the observability middleware can
+  // enrich the request log without touching the response body or headers.
+  errorCodes.set(c, code)
+  return response
 }
 
 export function createGatewayApp(
   config: GatewayConfig, fetcher: UpstreamFetcher = fetch, crypto?: CryptoService,
-  policy: GatewayPolicy = {},
+  policy: GatewayPolicy = {}, observability: GatewayObservability = {},
 ) {
   if (policy.accountWorkflows && (!crypto || !policy.limiter)) {
     throw new Error('Account workflows require both encryption and Redis rate limiter')
@@ -125,7 +306,10 @@ export function createGatewayApp(
   validatePolicies(activeRouteDefinitions(policyEnvironment), policyEnvironment, ROUTE_OPERATIONS)
   const allowlist: CompiledIpAllowlist = compileIpAllowlist(policy.trustedIngress || '')
   const allowedHosts = (policy.allowedHosts || '').split(',').map(s => s.trim()).filter(Boolean)
+  // PR-D hook: install the observability bundle (logger, metrics, probes, token)
+  // before any middleware so the shared state is already configured.
   const app = new Hono<Bindings>()
+  installObservability(app, observability)
 
   // GW-204 layer 1: forge-proof client identity and hardened boundary headers.
   // A request that claims to be proxied but comes from a peer outside the
@@ -285,15 +469,18 @@ export function createGatewayApp(
   app.get('/healthz', c => c.json({ status: 'ok', contract: CONTRACT_VERSION }))
 
   const accountWorkflows = Boolean(policy.accountWorkflows)
-  registerPublicRoutes(app, { config, fetcher, crypto, accountWorkflows })
+  // PR-D hook: wrap the upstream fetcher so every call records duration,
+  // timeout and failure metrics under the current route template.
+  const observed = observeFetcher(fetcher)
+  registerPublicRoutes(app, { config, fetcher: observed, crypto, accountWorkflows })
   registerAccountRoutes(app, {
-    config, fetcher, crypto,
+    config, fetcher: observed, crypto,
     limiter: policy.limiter,
     loginProtection: policy.loginProtection,
     accountWorkflows,
   })
-  registerUserRoutes(app, { config, fetcher })
-  registerOrdersRoutes(app, { config, fetcher })
+  registerUserRoutes(app, { config, fetcher: observed })
+  registerOrdersRoutes(app, { config, fetcher: observed })
 
   app.notFound(c => fail(c, 'NOT_FOUND', 'Gateway route does not exist', 404))
   app.onError((error, c) => {
