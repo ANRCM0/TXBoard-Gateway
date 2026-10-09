@@ -55,7 +55,11 @@ import {
   validatePolicies,
   type PolicyEnvironment,
 } from './config/policies.js'
-import { policyEnforcementMiddleware } from './middleware/policy.js'
+import {
+  buildPolicyIndex,
+  policyEnforcementMiddleware,
+  resolvePolicy,
+} from './middleware/policy.js'
 
 /**
  * app.ts — the single Hono instance and the composition root.
@@ -304,6 +308,12 @@ export function createGatewayApp(
     accountWorkflows: Boolean(policy.accountWorkflows),
   }
   validatePolicies(activeRouteDefinitions(policyEnvironment), policyEnvironment, ROUTE_OPERATIONS)
+  // The frozen table, compiled once. Every layer that needs to know a route's
+  // posture (the CORS credential check, the enforcement middleware) shares this
+  // single index so a route can never have two different answers depending on
+  // which layer asked.
+  const routeDefinitionsForDeployment = activeRouteDefinitions(policyEnvironment)
+  const policyIndex = buildPolicyIndex(routeDefinitionsForDeployment)
   const allowlist: CompiledIpAllowlist = compileIpAllowlist(policy.trustedIngress || '')
   const allowedHosts = (policy.allowedHosts || '').split(',').map(s => s.trim()).filter(Boolean)
   // PR-D hook: install the observability bundle (logger, metrics, probes, token)
@@ -434,7 +444,15 @@ export function createGatewayApp(
     // than being treated as implicitly authorized by the absent header. The
     // Bearer *shape* check stays the route layer's job — this only refuses to
     // let "no Origin" stand in for it.
-    if (!origin && requiresCredentialProof(c.req.path)) {
+    //
+    // PR-D / GW-215 interaction: this layer runs BEFORE the route policy
+    // middleware, so it must not decide a route's fate on its own. When the
+    // frozen table bans the write outright (disabledWrite, POST /orders), the
+    // policy layer answers 405 with zero upstream calls; a 401 here would
+    // pre-empt that verdict and, worse, leak that a credential is the missing
+    // piece on a route no credential can ever open. Defer to the table.
+    if (!origin && requiresCredentialProof(c.req.path)
+      && resolvePolicy(c.req.path, c.req.method, policyIndex)?.policy.name !== 'disabledWrite') {
       const authorization = c.req.header('Authorization') || ''
       if (!BEARER_PATTERN.test(authorization)) {
         return fail(c, 'UNAUTHORIZED', 'Credential is required for this route', 401)
@@ -462,7 +480,7 @@ export function createGatewayApp(
   // capability or database theme config: the table is compile-time readonly.
   // ===========================================================================
   app.use(`${PREFIX}/*`, policyEnforcementMiddleware({
-    definitions: activeRouteDefinitions(policyEnvironment),
+    definitions: routeDefinitionsForDeployment,
     maxRequestBytes: config.maxRequestBytes,
   }))
 
