@@ -21,6 +21,7 @@ import {
 import {
   CONTRACT_VERSION,
   PREFIX,
+  PREFIX_V2,
   PRESERVED_STATUSES,
   failureEnvelope,
   successEnvelope,
@@ -52,10 +53,17 @@ import type { RouteContext } from './routes/shared.js'
 import {
   ROUTE_OPERATIONS,
   activeRouteDefinitions,
+  activeV2RouteDefinitions,
   validatePolicies,
+  validateV2Policies,
   type PolicyEnvironment,
 } from './config/policies.js'
-import { policyEnforcementMiddleware } from './middleware/policy.js'
+import {
+  buildPolicyIndex,
+  policyEnforcementMiddleware,
+  resolvePolicy,
+} from './middleware/policy.js'
+import { registerV2Routes } from './v2/routes.js'
 
 /**
  * app.ts — the single Hono instance and the composition root.
@@ -303,7 +311,20 @@ export function createGatewayApp(
     redis: Boolean(policy.limiter),
     accountWorkflows: Boolean(policy.accountWorkflows),
   }
-  validatePolicies(activeRouteDefinitions(policyEnvironment), policyEnvironment, ROUTE_OPERATIONS)
+  // The frozen v1 table, validated before any Hono instance exists, and
+  // compiled once into a lookup index. Every layer that needs to know a
+  // route's posture (the CORS credential check, the enforcement middleware)
+  // shares this single index so a route can never have two different answers
+  // depending on which layer asked.
+  const routeDefinitionsForDeployment = activeRouteDefinitions(policyEnvironment)
+  validatePolicies(routeDefinitionsForDeployment, policyEnvironment, ROUTE_OPERATIONS)
+  const policyIndex = buildPolicyIndex(routeDefinitionsForDeployment)
+  // The v2 (`/txapi/*`) table is validated the same way, and gated on
+  // GATEWAY_ENABLE_V2 so a disabled deployment never mounts a v2 route.
+  const v2Enabled = config.enableV2
+  if (v2Enabled) {
+    validateV2Policies(activeV2RouteDefinitions(policyEnvironment))
+  }
   const allowlist: CompiledIpAllowlist = compileIpAllowlist(policy.trustedIngress || '')
   const allowedHosts = (policy.allowedHosts || '').split(',').map(s => s.trim()).filter(Boolean)
   // PR-D hook: install the observability bundle (logger, metrics, probes, token)
@@ -411,7 +432,10 @@ export function createGatewayApp(
   }
 
   // Exact-origin CORS; never reflect arbitrary origins or issue credential cookies.
-  app.use(`${PREFIX}/*`, async (c, next) => {
+  // The SAME middleware covers both contract surfaces: `/gateway/v1/*` (v1) and
+  // `/txapi/*` (v2). One allowedOrigins set serves both, per the design doc — a
+  // client origin is either trusted for the Gateway or it is not.
+  const corsAndCredentialMiddleware = async (c: Parameters<Parameters<Hono<Bindings>['use']>[1]>[0], next: () => Promise<void>) => {
     const origin = c.req.header('Origin')
     if (origin) {
       if (!config.allowedOrigins.has(origin)) {
@@ -434,7 +458,15 @@ export function createGatewayApp(
     // than being treated as implicitly authorized by the absent header. The
     // Bearer *shape* check stays the route layer's job — this only refuses to
     // let "no Origin" stand in for it.
-    if (!origin && requiresCredentialProof(c.req.path)) {
+    //
+    // When the frozen table bans the write outright (disabledWrite), this layer
+    // runs BEFORE the policy layer, so it must not decide that route's fate on
+    // its own: a 401 here would pre-empt the policy layer's 405 and, worse,
+    // leak that a credential is the missing piece on a route no credential can
+    // ever open. Both layers share one index so the answer is the same whoever
+    // asks.
+    if (!origin && requiresCredentialProof(c.req.path)
+      && resolvePolicy(c.req.path, c.req.method, policyIndex)?.policy.name !== 'disabledWrite') {
       const authorization = c.req.header('Authorization') || ''
       if (!BEARER_PATTERN.test(authorization)) {
         return fail(c, 'UNAUTHORIZED', 'Credential is required for this route', 401)
@@ -443,7 +475,12 @@ export function createGatewayApp(
     // =================== end PR-C hook (GW-215) ===================
     if (c.req.method === 'OPTIONS') return c.body(null, 204)
     await next()
-  })
+  }
+  // One registration per contract prefix: Hono's `use` takes a single path,
+  // and the two prefixes must share the identical middleware instance so an
+  // origin that is trusted for the Gateway is trusted for both surfaces.
+  app.use(`${PREFIX}/*`, corsAndCredentialMiddleware)
+  app.use(`${PREFIX_V2}/*`, corsAndCredentialMiddleware)
 
   // ================================ PR-B hook ================================
   // GW-212: the declarative route policy layer. One middleware, registered once
@@ -462,11 +499,19 @@ export function createGatewayApp(
   // capability or database theme config: the table is compile-time readonly.
   // ===========================================================================
   app.use(`${PREFIX}/*`, policyEnforcementMiddleware({
-    definitions: activeRouteDefinitions(policyEnvironment),
+    definitions: routeDefinitionsForDeployment,
     maxRequestBytes: config.maxRequestBytes,
   }))
 
   app.get('/healthz', c => c.json({ status: 'ok', contract: CONTRACT_VERSION }))
+
+  // ============================ v2 (`/txapi/*`) ============================
+  // PR1: the v2 surface mounts below the v1 routes, sharing the global
+  // baseline, CORS, rate limiting and observability middleware registered
+  // above. When GATEWAY_ENABLE_V2 is false, `registerV2Routes` registers
+  // nothing, so `/txapi/*` answers the standard 404 NOT_FOUND. The v2
+  // envelope reports `meta.version = 'txboard-v1'`.
+  registerV2Routes(app, { config, features: config.v2Features }, v2Enabled)
 
   const accountWorkflows = Boolean(policy.accountWorkflows)
   // PR-D hook: wrap the upstream fetcher so every call records duration,

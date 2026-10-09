@@ -1,4 +1,4 @@
-import { PREFIX } from '../middleware/request-context.js'
+import { PREFIX, PREFIX_V2 } from '../middleware/request-context.js'
 
 /**
  * config/policies.ts — the compile-time route policy table (GW-212 / PR-B).
@@ -128,6 +128,102 @@ const UPSTREAM_WRITE_OPERATIONS: ReadonlySet<string> = new Set<string>([
   'register',
   'sendEmailCode',
 ])
+
+/**
+ * ===================== v2 (`/txapi/*`) policy surface =====================
+ *
+ * The v2 table is a SEPARATE list, not an extension of `routeDefinitions`:
+ *
+ *  - the v1 table is frozen and its contents are pinned by v1 snapshot tests,
+ *    so mixing v2 entries into it would either change the v1 contract or
+ *    force those tests to change (a v1 behavior change, which is banned);
+ *  - `validatePolicies()` checks `path.startsWith(`${PREFIX}/`)`, so a v2 path
+ *    in the v1 table would fail the boot;
+ *  - keeping the tables apart makes the "v1 is frozen, v2 evolves" rule
+ *    structural: a v2 PR can add entries here without touching anything v1.
+ *
+ * PR1 registers exactly one v2 route: `GET /txapi/healthz` (Gateway-local, no
+ * upstream). Later PRs append to `v2RouteDefinitions` together with their
+ * upstream operations, and the same `validatePolicies()` invariants apply.
+ */
+export const v2RouteDefinitions = [
+  // Gateway-local health probe. No upstream operation, no token, no limiter:
+  // the v1 `/healthz` probe has the identical posture.
+  { method: 'GET', path: `${PREFIX_V2}/healthz`, policy: POLICY_DEFINITIONS.publicRead },
+] as const
+
+export type V2RouteDefinition = (typeof v2RouteDefinitions)[number]
+
+/**
+ * v2 upstream operations each v2 route may talk to. Deliberately empty in
+ * PR1: `/txapi/healthz` is answered locally, and no v2 upstream operation is
+ * registered until the upstream route it maps to exists (see
+ * services/upstream.ts, `allowlistedPathsV2`).
+ */
+export const V2_ROUTE_OPERATIONS: Readonly<Record<string, readonly string[]>> = {
+  [routeKey('GET', `${PREFIX_V2}/healthz`)]: [],
+} as const
+
+/** The v2 routes actually in force for a given deployment. */
+export function activeV2RouteDefinitions(
+  environment: PolicyEnvironment = {},
+): readonly V2RouteDefinition[] {
+  // PR1: the only v2 route has no capability gate. Future PRs gate routes on
+  // GATEWAY_V2_FEATURES / environment capabilities here, so an ungated route
+  // is a plain 404 rather than a reachable route with a weaker posture.
+  void environment
+  return v2RouteDefinitions
+}
+
+/**
+ * Boot-time validation of the v2 policy table, with the same semantics as
+ * `validatePolicies()` for v1: well-formed, on-prefix, unique, canonical,
+ * `userRead` never cacheable, `disabledWrite` never mapped to an upstream
+ * write operation.
+ */
+export function validateV2Policies(
+  definitions: readonly V2RouteDefinition[] = v2RouteDefinitions,
+  environment: PolicyEnvironment = {},
+  operations: Readonly<Record<string, readonly string[]>> = V2_ROUTE_OPERATIONS,
+): void {
+  const seen = new Set<string>()
+  for (const definition of definitions) {
+    const { method, path, policy } = definition
+    const key = routeKey(method, path)
+
+    if (!method || !path || !policy) {
+      throw new Error(`Route policy entry is missing a method, path or policy: ${JSON.stringify(definition)}`)
+    }
+    if (!path.startsWith(`${PREFIX_V2}/`)) {
+      throw new Error(`Route policy path is outside ${PREFIX_V2}: ${key}`)
+    }
+    if (seen.has(key)) {
+      throw new Error(`Duplicate route policy entry: ${key}`)
+    }
+    seen.add(key)
+    if (!Object.hasOwn(POLICY_DEFINITIONS, policy.name)) {
+      throw new Error(`Route ${key} references unknown policy ${policy.name}`)
+    }
+    if (POLICY_DEFINITIONS[policy.name] !== policy) {
+      throw new Error(`Route ${key} uses a non-canonical definition for policy ${policy.name}`)
+    }
+    for (const operation of operations[key] ?? []) {
+      if (policy.name === 'disabledWrite' && UPSTREAM_WRITE_OPERATIONS.has(operation)) {
+        throw new Error(`disabledWrite route ${key} must not call upstream write operation ${operation}`)
+      }
+    }
+    if (policy.name === 'userRead' && policy.cache !== 'off') {
+      throw new Error(`Policy userRead must never be cacheable (route ${definition.method} ${definition.path})`)
+    }
+  }
+
+  for (const definition of definitions) {
+    const { policy } = definition
+    if (policy.body === 'hpke' && !environment.replayStore) {
+      throw new Error(`Policy ${policy.name} accepts an HPKE envelope without a replay store`)
+    }
+  }
+}
 
 /**
  * Wired dependencies the policy table is validated against.

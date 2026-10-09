@@ -4,12 +4,28 @@ import { Aes256Gcm, CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from '@hpke/c
 import { GatewayFailure } from '../services/upstream.js'
 
 const info = new TextEncoder().encode('TXBOARD-GW-V1-LOGIN-HPKE')
-const aadPrefix = 'txboard-gateway:v1\nPOST\n/gateway/v1/secure/auth/'
 const replayWindowMs = 60_000
 export type CryptoOperation = 'login' | 'register' | 'email-code'
 export interface ReplayStore {
   reserve(kid: string, nonce: string, ttlMs: number): Promise<boolean>
 }
+
+/**
+ * The AAD prefixes of the two contract surfaces, as bound constant strings.
+ *
+ * The AAD binds a sealed payload to the exact path it may be opened on: v1
+ * ciphertext (`/gateway/v1/secure/auth/*`) and v2 ciphertext
+ * (`/txapi/secure/auth/*`) are therefore NOT interchangeable, so a captured
+ * v1 envelope can never be replayed against the v2 surface. The v2 prefix is
+ * defined here now, ahead of the v2 sealed routes that will use it (PR6).
+ */
+export const AAD_PREFIXES = {
+  v1: 'txboard-gateway:v1\nPOST\n/gateway/v1/secure/auth/',
+  v2: 'txboard-gateway:v2\nPOST\n/txapi/secure/auth/',
+} as const
+
+/** The contract surface an AAD prefix belongs to. */
+export type AadSurface = keyof typeof AAD_PREFIXES
 
 const suite = new CipherSuite({
   kem: new DhkemP256HkdfSha256(), kdf: new HkdfSha256(), aead: new Aes256Gcm(),
@@ -29,8 +45,8 @@ function fromB64(value: string, max: number): Uint8Array {
   if (bytes.toString('base64url') !== value) throw new Error('Invalid base64url encoding')
   return bytes
 }
-function aad(request: SealedRequest, operation: CryptoOperation) {
-  return new TextEncoder().encode(aadPrefix + operation + '\n' +
+function aad(request: SealedRequest, operation: CryptoOperation, surface: AadSurface = 'v1') {
+  return new TextEncoder().encode(AAD_PREFIXES[surface] + operation + '\n' +
     request.kid + '\n' + request.ts + '\n' + request.nonce)
 }
 
@@ -61,7 +77,7 @@ export class CryptoService {
   }
   publicKey() { return { ...this.published } }
 
-  async open(request: SealedRequest, operation: CryptoOperation = 'login'): Promise<unknown> {
+  async open(request: SealedRequest, operation: CryptoOperation = 'login', surface: AadSurface = 'v1'): Promise<unknown> {
     if (operation !== 'login' && this.published.scope !== 'account-workflows') {
       throw new GatewayFailure('VALIDATION_ERROR', 404, 'Encrypted operation is disabled')
     }
@@ -78,7 +94,7 @@ export class CryptoService {
         enc: fromB64(request.enc, 500),
         info,
       })
-      plaintext = await recipient.open(fromB64(request.ct, 20000), aad(request, operation))
+      plaintext = await recipient.open(fromB64(request.ct, 20000), aad(request, operation, surface))
     } catch {
       throw new GatewayFailure('VALIDATION_ERROR', 400, 'Invalid encrypted request')
     }

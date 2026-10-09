@@ -10,14 +10,39 @@
 export const CONTRACT_VERSION = '1'
 export const PREFIX = '/gateway/v1'
 
+/**
+ * v2 (`/txapi/*`) contract surface. Semantically the "TXBoard first-class API
+ * v1" — a distinct namespace, never a rename of `/gateway/v1`. Its own
+ * contract version string is what lets a client dispatch the right parser.
+ */
+export const PREFIX_V2 = '/txapi'
+export const CONTRACT_VERSION_V2 = 'txboard-v1'
+
+/**
+ * The contract version reported by an envelope. Callers pass the version of
+ * the surface they serve (`'1'` for `/gateway/v1`, `'txboard-v1'` for
+ * `/txapi`); the v1 default keeps every existing call site unchanged.
+ */
+export type ContractVersion = typeof CONTRACT_VERSION | typeof CONTRACT_VERSION_V2
+
 /** Success envelope. */
-export function successEnvelope(requestId: string, data: unknown, status: 200 | 201 = 200) {
-  return { ok: true, data, meta: { version: CONTRACT_VERSION, requestId } }
+export function successEnvelope(
+  requestId: string,
+  data: unknown,
+  status: 200 | 201 = 200,
+  version: ContractVersion = CONTRACT_VERSION,
+) {
+  return { ok: true, data, meta: { version, requestId } }
 }
 
 /** Failure envelope. */
-export function failureEnvelope(requestId: string, code: string, message: string) {
-  return { ok: false, error: { code, message }, meta: { version: CONTRACT_VERSION, requestId } }
+export function failureEnvelope(
+  requestId: string,
+  code: string,
+  message: string,
+  version: ContractVersion = CONTRACT_VERSION,
+) {
+  return { ok: false, error: { code, message }, meta: { version, requestId } }
 }
 
 export type ErrorStatus =

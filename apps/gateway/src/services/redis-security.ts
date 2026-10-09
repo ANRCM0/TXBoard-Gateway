@@ -19,12 +19,28 @@ const RATE_LUA = [
   "return n",
 ].join('\n')
 
+/**
+ * The contract surface a key belongs to. v1 and v2 share one Redis instance
+ * and the same fail-closed semantics, but their key spaces are strictly
+ * separated (`txbgw:v1:*` vs `txbgw:v2:*`) so quotas can never be spent
+ * across contracts and each keyspace can be cleaned or evaluated on its own.
+ */
+export type KeyVersion = 'v1' | 'v2'
+
+/** Redis key namespace for a contract surface. */
+export function keyPrefix(version: KeyVersion): string {
+  return `txbgw:${version}`
+}
+
 /** Both replay and account throttle are fail-closed. Redis keys never contain
  * raw email addresses, credentials, CAPTCHA tokens or session identifiers. */
 export class RedisSecurity implements ReplayStore, AccountLimiter {
-  private constructor(private readonly client: ReturnType<typeof createClient>) {}
+  private constructor(
+    private readonly client: ReturnType<typeof createClient>,
+    private readonly version: KeyVersion = 'v1',
+  ) {}
 
-  static async connect(raw: string): Promise<RedisSecurity> {
+  static async connect(raw: string, version: KeyVersion = 'v1'): Promise<RedisSecurity> {
     let url: URL
     try { url = new URL(raw) } catch { throw new Error('Invalid GATEWAY_REDIS_URL') }
     if (!['redis:', 'rediss:'].includes(url.protocol) || !url.hostname
@@ -38,7 +54,7 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
     client.on('error', () => {})
     await client.connect()
     if (!client.isReady) throw new Error('Redis safety store not ready')
-    return new RedisSecurity(client)
+    return new RedisSecurity(client, version)
   }
   private ready() {
     if (!this.client.isReady) {
@@ -49,7 +65,7 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
     this.ready()
     try {
       const result = await this.client.set(
-        'txbgw:v1:replay:' + kid + ':' + nonce, '1', { NX: true, PX: ttlMs },
+        keyPrefix(this.version) + ':replay:' + kid + ':' + nonce, '1', { NX: true, PX: ttlMs },
       )
       return result === 'OK'
     } catch {
@@ -60,7 +76,7 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
     this.ready()
     const policy = policies[action]
     const digest = createHash('sha256').update(email.trim().toLowerCase()).digest('hex')
-    const key = 'txbgw:v1:rate:' + action + ':' + digest
+    const key = keyPrefix(this.version) + ':rate:' + action + ':' + digest
     let used: unknown
     try {
       used = await this.client.eval(RATE_LUA, {
@@ -81,7 +97,7 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
     // a single account's budget. clientIp is advisory: absence skips this check.
     if (clientIp) {
       const ipDigest = createHash('sha256').update(clientIp).digest('hex')
-      const ipKey = 'txbgw:v1:rateip:' + action + ':' + ipDigest
+      const ipKey = keyPrefix(this.version) + ':rateip:' + action + ':' + ipDigest
       let ipUsed: unknown
       try {
         ipUsed = await this.client.eval(RATE_LUA, {
@@ -102,7 +118,9 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
   async close(): Promise<void> { this.client.destroy() }
 }
 
-export async function loadRedisSecurity(env: NodeJS.ProcessEnv): Promise<RedisSecurity | undefined> {
+export async function loadRedisSecurity(
+  env: NodeJS.ProcessEnv, version: KeyVersion = 'v1',
+): Promise<RedisSecurity | undefined> {
   if (!env.GATEWAY_REDIS_URL) return undefined
-  return RedisSecurity.connect(env.GATEWAY_REDIS_URL)
+  return RedisSecurity.connect(env.GATEWAY_REDIS_URL, version)
 }

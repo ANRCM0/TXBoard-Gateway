@@ -1,3 +1,5 @@
+import { PREFIX, PREFIX_V2 } from '../middleware/request-context.js'
+
 export type GatewayConfig = {
   host: string
   port: number
@@ -12,6 +14,14 @@ export type GatewayConfig = {
   timeoutMs: number
   maxRequestBytes: number
   maxResponseBytes: number
+  /**
+   * v2 (`/txapi/*`) infrastructure: when false, no `/txapi/*` route is
+   * registered at all (the prefix answers a plain 404). Default true.
+   * GATEWAY_ENABLE_V2=false disables it.
+   */
+  enableV2: boolean
+  /** GATEWAY_V2_FEATURES: comma-separated v2 capability flags (e.g. `agent,theme`). */
+  v2Features: string[]
 }
 
 function intSetting(value: string | undefined, fallback: number, min: number, max: number): number {
@@ -32,6 +42,31 @@ function privateHost(host: string): boolean {
   if (ip.length !== 4 || ip.some(x => !Number.isInteger(x) || x < 0 || x > 255)) return false
   return ip[0] === 10 || ip[0] === 127 || (ip[0] === 172 && ip[1]! >= 16 && ip[1]! <= 31)
     || (ip[0] === 192 && ip[1] === 168)
+}
+
+/**
+ * v2 feature flags: a comma-separated allowlist of capability names used to
+ * grey the v2 surface (`GATEWAY_V2_FEATURES=agent,theme,knowledge`). Each
+ * entry is a lowercase alphanumeric token with `-`/`_` separators, and a
+ * duplicate is a configuration error: the flags gate capability NAMES, so a
+ * repeated entry can never widen the enabled set but would hide a typo.
+ */
+function v2FeatureFlags(value: string | undefined): string[] {
+  const features = (value || '')
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean)
+  const seen = new Set<string>()
+  for (const feature of features) {
+    if (!/^[a-z0-9_-]{1,64}$/.test(feature)) {
+      throw new Error(`Invalid GATEWAY_V2_FEATURES entry: ${feature}`)
+    }
+    if (seen.has(feature)) {
+      throw new Error(`Duplicate GATEWAY_V2_FEATURES entry: ${feature}`)
+    }
+    seen.add(feature)
+  }
+  return features
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): GatewayConfig {
@@ -69,6 +104,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const upstreamHosts = (env.GATEWAY_UPSTREAM_HOSTS || upstream.hostname)
     .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
 
+  // The v2 surface is on by default; `false` (case-insensitive, whitespace
+  // tolerated) is the only accepted opt-out, so an unparseable value can never
+  // silently fall back to one side of the switch.
+  const enableV2 = (env.GATEWAY_ENABLE_V2 ?? 'true').trim().toLowerCase()
+  if (!['true', 'false'].includes(enableV2)) {
+    throw new Error('GATEWAY_ENABLE_V2 must be "true" or "false"')
+  }
+
   return {
     host: env.GATEWAY_HOST || '127.0.0.1',
     port: intSetting(env.GATEWAY_PORT, 8787, 1, 65535),
@@ -80,5 +123,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     timeoutMs: intSetting(env.GATEWAY_UPSTREAM_TIMEOUT_MS, 8000, 500, 60000),
     maxRequestBytes: intSetting(env.GATEWAY_MAX_REQUEST_BYTES, 16384, 1024, 1048576),
     maxResponseBytes: intSetting(env.GATEWAY_MAX_RESPONSE_BYTES, 1048576, 16384, 8388608),
+    enableV2: enableV2 === 'true',
+    v2Features: v2FeatureFlags(env.GATEWAY_V2_FEATURES),
   }
+}
+
+/** True when `path` belongs to either contract surface (`/gateway/v1` or `/txapi`). */
+export function isContractPath(path: string): boolean {
+  return path.startsWith(`${PREFIX}/`) || path.startsWith(`${PREFIX_V2}/`)
 }

@@ -39,6 +39,31 @@ const allowlistedPaths = {
 
 export type UpstreamOperation = keyof typeof allowlistedPaths
 
+/**
+ * The v2 (`/txapi/*`) upstream allowlist.
+ *
+ * PR1 deliberately ships it EMPTY: no v2 route in this PR talks to Laravel
+ * (`/txapi/healthz` is answered locally), and an operation must not exist in
+ * this map until the upstream route it maps to actually exists. Registering a
+ * path here would be exactly the fail-open shortcut the v2 design forbids —
+ * later PRs add entries together with the upstream routes they require, and a
+ * missing upstream route must surface as `FEATURE_DISABLED`, never as a
+ * fabricated local response.
+ *
+ * The type is kept as an explicit union so `allowlistedPathsV2[operation]`
+ * stays a compile error for an unregistered operation instead of a runtime
+ * undefined.
+ */
+const allowlistedPathsV2 = {} as const
+
+export type UpstreamOperationV2 = never
+
+/** Resolve the allowlisted upstream path of a v2 operation. */
+export function v2UpstreamPath(operation: UpstreamOperationV2): string {
+  // Unreachable while the table is empty; keeps the lookup typed.
+  return (allowlistedPathsV2 as Record<string, string>)[operation as string] ?? ''
+}
+
 /** Read UTF-8 JSON with a strict byte cap, including chunked bodies. */
 export async function boundedJson(
   stream: ReadableStream<Uint8Array> | null,
