@@ -2,6 +2,14 @@
 
 > 更新时间：**2026-10-09**；旧阶段记录为历史快照，以下新增最新 main 代码核查。此文档记录代码和 CI，**不是生产就绪证明**。默认分支 main。当前不接入真实 TXBoard 环境，真实联调的验收暂按产品决策**延期**。
 
+## 2026-10-09：已确认的主分支 CI 回归（与本次文档变更无关）
+
+- Gateway main 基线 commit `94b3b9efd775` 的 GitHub Actions `verify` 已失败；本次纯文档 PR 也复现同一源码行为。因此不能将红 CI 归因于路由文档。
+- 失败测试：`apps/gateway/test/policies.test.ts` 的 “performs zero upstream calls for POST /gateway/v1/orders (disabledWrite)”；期望 **HTTP 405**，实际 **401**。
+- 可能的具体冲突点：`apps/gateway/src/app.ts` 在静态 `policyEnforcementMiddleware` 运行前，先对无 Origin 的 `/gateway/v1/orders` 做 `requiresCredentialProof` Bearer 拒绝，导致 disabledWrite 的静态 405 规则没有先执行。
+- **另立代码修复 PR**：让禁用写入的 405 在该路径上优先，同时确保用户 GET 无 Bearer 仍 401、任何 POST orders 上游调用数为 0，并增加双场景回归测试；不要通过放开权限、修改测试预期或绕过 CI 掩盖问题。
+- 本次文档 PR 不修改上述运行时代码；在 Verify 通过前不声称 Gateway CI 全绿。
+
 ## 一、合并记录与证据
 
 | PR | 合并范围 | 最终代码证据 |
