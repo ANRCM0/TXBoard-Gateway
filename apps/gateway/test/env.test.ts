@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { loadConfig } from '../src/env.js'
+import { loadConfig } from '../src/config/env.js'
 
 describe('secure gateway configuration', () => {
   it('requires an explicit fixed upstream URL', () => {

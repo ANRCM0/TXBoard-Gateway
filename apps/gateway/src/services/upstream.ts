@@ -1,4 +1,4 @@
-import type { GatewayConfig } from './env.js'
+import type { GatewayConfig } from '../config/env.js'
 
 export type GatewayFailureCode =
   | 'UPSTREAM_UNAVAILABLE'

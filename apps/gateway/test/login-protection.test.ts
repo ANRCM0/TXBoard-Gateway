@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MemoryLoginProtection, defaultLoginPolicy, type LoginProtection } from '../src/login-protection.js'
+import { MemoryLoginProtection, defaultLoginPolicy, type LoginProtection } from '../src/middleware/login-protection.js'
 
 /**
  * GW-203 unit tests. Semantics are asserted on the in-process implementation,

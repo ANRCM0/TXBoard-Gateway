@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { RedisLoginProtection } from '../../apps/gateway/dist/login-protection.js'
+import { RedisLoginProtection } from '../../apps/gateway/dist/middleware/login-protection.js'
 
 const url = process.env.GATEWAY_TEST_REDIS_URL
 if (!url) throw new Error('Set GATEWAY_TEST_REDIS_URL for live Redis integration')

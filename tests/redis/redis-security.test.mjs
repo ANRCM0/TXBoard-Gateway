@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { randomBytes, generateKeyPairSync } from 'node:crypto'
-import { RedisSecurity } from '../../apps/gateway/dist/redis-security.js'
-import { CryptoService } from '../../apps/gateway/dist/crypto.js'
+import { RedisSecurity } from '../../apps/gateway/dist/services/redis-security.js'
+import { CryptoService } from '../../apps/gateway/dist/services/crypto.js'
 import { encryptForOperation } from '../../packages/theme-sdk/dist/crypto.js'
 
 const url = process.env.GATEWAY_TEST_REDIS_URL

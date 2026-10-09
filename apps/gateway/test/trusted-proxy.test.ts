@@ -7,9 +7,9 @@ import {
   normalizeIp,
   parseIpEntry,
   sanitizeForwardedHeaders,
-} from '../src/trusted-proxy.js'
+} from '../src/middleware/security.js'
 import { createGatewayApp, safeHostHeader } from '../src/app.js'
-import { loadConfig } from '../src/env.js'
+import { loadConfig } from '../src/config/env.js'
 
 const config = loadConfig({
   TXBOARD_UPSTREAM_URL: 'https://txboard.example/',

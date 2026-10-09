@@ -1,10 +1,10 @@
 import { serve } from '@hono/node-server'
 import { createGatewayApp } from './app.js'
-import { loadConfig } from './env.js'
-import { loadCryptoService } from './crypto.js'
-import { loadRedisSecurity } from './redis-security.js'
-import { loadLoginProtection } from './login-protection.js'
-import { compileIpAllowlist } from './trusted-proxy.js'
+import { loadConfig } from './config/env.js'
+import { loadCryptoService } from './services/crypto.js'
+import { loadRedisSecurity } from './services/redis-security.js'
+import { loadLoginProtection } from './middleware/login-protection.js'
+import { compileIpAllowlist } from './middleware/security.js'
 
 const config = loadConfig()
 // GW-204: fail closed at boot on a malformed ingress allowlist rather than at request time.

@@ -8,9 +8,9 @@ import {
   retryAfterSeconds,
   type RouteRatePolicy,
   type ResolvedPolicy,
-} from '../src/rate-limiter.js'
+} from '../src/middleware/rate-limit.js'
 import { createGatewayApp } from '../src/app.js'
-import { loadConfig } from '../src/env.js'
+import { loadConfig } from '../src/config/env.js'
 
 const config = loadConfig({
   TXBOARD_UPSTREAM_URL: 'https://txboard.example/',
