@@ -13,7 +13,9 @@ import {
 import {
   compileIpAllowlist,
   evaluateRequest,
+  forgedHeaderNames,
   hostMatchesAllowlist,
+  requiresCredentialProof,
   type CompiledIpAllowlist,
 } from './middleware/security.js'
 import {
@@ -22,6 +24,7 @@ import {
   PRESERVED_STATUSES,
   failureEnvelope,
   successEnvelope,
+  BEARER_PATTERN,
   type ErrorStatus,
 } from './middleware/request-context.js'
 import { registerPublicRoutes } from './routes/public.js'
@@ -67,6 +70,8 @@ export type GatewayPolicy = {
     retryAfterHeader: number
     ipCount: number
     subjectCount: number
+    /** GW-215: which dimension rejected, when limited. */
+    limitedBy?: 'ip' | 'subject' | 'missing_subject'
   }) => void
   /** GW-203: login anti-credential-stuffing (account + IP dual dimension). */
   loginProtection?: LoginProtection
@@ -137,9 +142,13 @@ export function createGatewayApp(
     c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
 
     const raw = c.req.raw as Request & { __peerIp?: string }
+    // GW-215: the client IP used for every later decision is derived from this
+    // single verdict only; no downstream code reads a forwarded header again.
     const peer = raw.__peerIp ?? '0.0.0.0'
     const verdict = evaluateRequest(peer, raw.headers, allowlist)
     if (verdict.reason === 'forged_headers') {
+      // Structured, name-only signal: header VALUES are never logged.
+      Object.defineProperty(raw, '__clientIp', { value: verdict.clientIp, enumerable: false })
       return fail(c, 'FORBIDDEN', 'Proxy headers are not accepted from this source', 403)
     }
     // Downstream code (rate limiting, audit logs) reads only this sanitized value.
@@ -194,10 +203,14 @@ export function createGatewayApp(
           c.header('Retry-After', String(decision.retryAfterHeader))
           observer?.({ policyId: route.id, requestId, limited: true, degraded: false,
             retryAfterHeader: decision.retryAfterHeader,
-            ipCount: decision.ipCount, subjectCount: decision.subjectCount })
+            ipCount: decision.ipCount, subjectCount: decision.subjectCount,
+            limitedBy: decision.limitedBy })
           return fail(c, 'RATE_LIMITED', 'Too many requests', 429)
         }
         if (decision.degraded) {
+          // GW-215: a degraded (fail-open) decision must be observable to the
+          // client and to alerting — never a silently unlimited request.
+          c.header('X-Gateway-Rate-Limit', 'degraded')
           observer?.({ policyId: route.id, requestId, limited: false, degraded: true,
             retryAfterHeader: 0,
             ipCount: decision.ipCount, subjectCount: decision.subjectCount })
@@ -228,6 +241,22 @@ export function createGatewayApp(
       c.header('Access-Control-Expose-Headers', 'X-Request-Id')
       c.header('Access-Control-Max-Age', '600')
     }
+
+    // ===================== PR-C hook (GW-215) =====================
+    // A MISSING Origin is NOT authorization. CORS only governs what a browser
+    // may read cross-origin; it never grants access. On routes that serve
+    // account data, an Origin-less request (curl, a script, a proxied replay)
+    // must still present a credential, otherwise it is rejected here rather
+    // than being treated as implicitly authorized by the absent header. The
+    // Bearer *shape* check stays the route layer's job — this only refuses to
+    // let "no Origin" stand in for it.
+    if (!origin && requiresCredentialProof(c.req.path)) {
+      const authorization = c.req.header('Authorization') || ''
+      if (!BEARER_PATTERN.test(authorization)) {
+        return fail(c, 'UNAUTHORIZED', 'Credential is required for this route', 401)
+      }
+    }
+    // =================== end PR-C hook (GW-215) ===================
     if (c.req.method === 'OPTIONS') return c.body(null, 204)
     await next()
   })
