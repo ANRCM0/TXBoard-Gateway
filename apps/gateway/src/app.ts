@@ -356,7 +356,8 @@ export function createGatewayApp(
     const raw = c.req.raw as Request & { __peerIp?: string }
     // GW-215: the client IP used for every later decision is derived from this
     // single verdict only; no downstream code reads a forwarded header again.
-    const peer = raw.__peerIp ?? '0.0.0.0'
+    const peer = peerAddressOf(raw)
+    if (!peer) return fail(c, 'FORBIDDEN', 'Client peer address unavailable', 403)
     const verdict = evaluateRequest(peer, raw.headers, allowlist)
     if (verdict.reason === 'forged_headers') {
       // Structured, name-only signal: header VALUES are never logged.
