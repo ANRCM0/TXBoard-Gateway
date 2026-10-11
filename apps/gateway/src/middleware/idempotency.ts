@@ -7,8 +7,9 @@ import { createHash } from 'node:crypto'
  *
  *  - `Idempotency-Key` — the client's own key (Stripe-style). Required on the
  *    write route, forwarded to Laravel verbatim. The Gateway validates its
- *    FORMAT and never its meaning; Laravel binds it to the authenticated
- *    user + operation + request hash (docs/adr-order-idempotency.md §3.1).
+ *    FORMAT and never its meaning; Laravel hashes it with the authenticated user and operation to identify
+ *    the claim; it hashes the validated request body separately to detect
+ *    same-key/different-body conflicts (docs/adr-order-idempotency.md).
  *
  *  - `X-Idempotency-Key-Hint` — derived BY THE GATEWAY from the validated body
  *    only (SHA-256 over the canonical JSON), without any user identity. ADR

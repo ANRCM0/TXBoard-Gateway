@@ -4,7 +4,7 @@
 - 日期：2026-10-11
 - 责任：TX（Laravel 主仓库实现）+ GW（Gateway 适配，仅设计不实现路由）
 - 关联任务：[task-backlog.md](./task-backlog.md) GW-305（本文档）；依赖 GW-302（[订单幂等 ADR](./adr-order-idempotency.md)）、GW-303（事务幂等实现）；下游 GW-306（支付回调沙箱）、GW-309（灰度验收）
-- 前置依赖：GW-302 ADR 已提交；GW-303 Laravel 事务幂等实现完成（本文档的幂等层完全复用 GW-302 的 `idempotency_keys` 表与三态状态机，不新建机制）
+- 前置依赖：GW-302 契约已修订；GW-303 TXBoard 订单创建实现见 PR #217（需 CI / 真并发验收）。checkout/cancel 尚未实现，未来复用同一 `idempotency_keys` 表。
 
 ## 1. 背景与问题
 
@@ -18,12 +18,12 @@
 
 ## 2. 决策（Decision）
 
-1. **checkout / cancel 复用 GW-302 的派生幂等键与 `idempotency_keys` 表**，不引入第二套幂等机制。operation 枚举从 `order.create` 扩展为三个（ADR GW-302 §3.1 已预留该枚举）：
+1. **checkout / cancel 复用 GW-302 的客户端操作键 + 请求指纹与 `idempotency_keys` 表**，不引入第二套幂等机制。operation 枚举从 `order.create` 扩展为三个（ADR GW-302 §3.1 已预留该枚举）：
    - `order.create`、`order.checkout`、`order.cancel`。
 2. **订单状态机是独立的"业务态"，幂等状态机（in_progress/succeeded/failed_retryable）是"操作态"**。两者分层：幂等表保证"同一操作不重复执行"，订单状态机保证"订单只能沿合法边迁移"。任何资金副作用前，两个检查都必须在同一事务内通过。
 3. **金额/优惠/余额校验全部在 Laravel 事务内**，Gateway 只校验请求 shape（tradeNo 格式），永不重算价格、不看余额、不判优惠券。
 4. **幂等语义**：同键同参数返回首次的同一结果（含同一 tradeNo 与同一响应快照）；checkout 在 `in_progress`（新鲜）时 409 + Retry-After，陈旧（>15 分钟）按 GW-302 §5.1 CAS 接管。
-5. **状态迁移原子化**：状态条件 UPDATE（`UPDATE orders SET status=… WHERE trade_no=? AND user_id=? AND status=<期望原态>`，受影响行数必须为 1）与幂等行写入、扣款写操作在同一 MySQL 事务提交；任何一步失败整体回滚，幂等行回写 `failed_retryable`。
+5. **状态迁移原子化**：状态条件 UPDATE（`UPDATE orders SET status=… WHERE trade_no=? AND user_id=? AND status=<期望原态>`，受影响行数必须为 1）与幂等行写入、扣款写操作在同一 MySQL 事务提交；任何一步失败整体回滚，包括幂等行；同 Key 可以安全重试（兼容历史 `failed_retryable` 行）。
 
 ## 3. 订单状态机（业务态）
 
@@ -63,7 +63,7 @@
 5. **余额校验**：`balance >= amount_after_coupon`，不足 → `INSUFFICIENT_BALANCE`。扣减在同一事务内 `UPDATE … SET balance = balance - ? WHERE user_id=? AND balance >= ?`（受影响行数必须为 1，防并发扣成负数）。
 6. **交付**：订阅开通/权益发放以事务后异步任务推进（与 GW-306 支付回调一致，不进幂等表）；事务提交前只写 `status=1` 与交易流水。
 
-> **不可重复扣款的论证**：扣款 UPDATE 的 `balance >= ?` 守卫 + 状态条件 UPDATE 的行数守卫 + `idempotency_keys` 唯一约束，三者任一失败即整体回滚。重放同一 checkout（同键同参数）在幂等层就返回首次快照，根本到不了扣款；同键不同参数在本派生键设计下不存在（参数即键的一部分）；并发双提交被唯一约束串行化。
+> **不可重复扣款的论证**：扣款 UPDATE 的 `balance >= ?` 守卫 + 状态条件 UPDATE 的行数守卫 + `idempotency_keys` 唯一约束，三者任一失败即整体回滚。重放同一 checkout（同键同参数）在幂等层就返回首次快照，根本到不了扣款；同客户端 Key 不同参数必须 409 `IDEMPOTENCY_CONFLICT`；并发双提交被唯一约束串行化。
 
 ### 3.2 cancel 的边界
 
@@ -101,8 +101,8 @@ Gateway 约束与 GW-304 完全一致：**不持有管理 token、不复制业�
 
 ### 5.2 幂等键派生（无 body 场景）
 
-- checkout/cancel 无请求体，派生键退化为 `SHA-256(user_id ‖ operation ‖ trade_no)`（Laravel 权威；Gateway 提示头 `X-Idempotency-Key-Hint = SHA-256(operation ‖ trade_no)`，仍不含身份，仅关联用）。
-- 客户端 `Idempotency-Key` 头仍**必填**（与 GW-304 一致的格式规则：缺失/非法 → 400 零上游调用），但**仅透传用于日志关联**——权威键是服务端派生的，客户端键不影响判定（评审确认：这是 GW-302 §3.2"派生键"决策在无 body 操作上的自然延伸，不是客户端键方案的回归）。
+- checkout/cancel 即使无请求体，仍采用 `key_hash = SHA-256(user_id : operation : client_key)`，`request_hash` 则从规范化的 `tradeNo`（以及支付方式等会影响操作结果的受控参数）计算；Gateway 提示头仍仅用于关联。
+- Gateway 的客户端 `Idempotency-Key` 头仍**必填**（缺失/非法 → 400 零上游调用），并由 Laravel 与用户 ID 和操作名一起构成权威 `key_hash`；请求指纹单独存储，同 Key 不同业务参数返回 409。
 - 同一 tradeNo 的 checkout 与 cancel 因 operation 不同而键不同，天然区分。
 
 ### 5.3 错误映射（GatewayFailureCode 增补）
@@ -151,7 +151,7 @@ Gateway 约束与 GW-304 完全一致：**不持有管理 token、不复制业�
 
 ## 8. 风险与回滚
 
-- **风险**：checkout 无 body 使幂等键只由 tradeNo 派生，若上游未来支持"部分支付/重试不同金额"会冲突 → 当前设计拒绝该演进（金额始终服务端重算），评审确认范围。
+- **风险**：checkout 后续可能包含支付方式/支付 Token；请求指纹必须覆盖任何影响结算的受控参数，Token 不得落库。支付回调唯一性仍以 GW-306 的账务约束单独保证。
 - **风险**：优惠券使用次数竞态 → 使用次数扣减在同一事务 + 条件 UPDATE（`used < limit` 守卫）。
 - **回滚**：Laravel 侧删除 operation 枚举项与路由即回滚；Gateway 侧关闭 flag 恢复 405，不动任何只读接口；`idempotency_keys` 表可整体保留（GC 自然过期）。
 
@@ -159,4 +159,4 @@ Gateway 约束与 GW-304 完全一致：**不持有管理 token、不复制业�
 
 1. checkout/cancel 是否需要独立 feature flag，还是统一并入 `GATEWAY_ORDER_WRITE_ENABLED`？倾向独立（checkout 是资金动作，风险高于 create）。
 2. 已支付订单的取消/退款流程归属：建议 GW-306 支付回调方案中单独章节，本文档明确排除。
-3. Gateway 无 body 路由的幂等键"客户端 Idempotency-Key 必填但仅关联"这一语义是否对 SDK 暴露差异（GW-308 契约需同步说明）。
+3. GW-308 SDK 必须生成独立客户端操作 Key 并在安全重试时原样复用；checkout/cancel 是否包含 method/token 入参须与现有 Laravel TXAPI 对齐。

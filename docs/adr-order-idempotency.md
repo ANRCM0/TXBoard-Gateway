@@ -1,175 +1,88 @@
-# ADR：订单写入幂等（GW-302）
+# ADR：订单创建持久化幂等（GW-302 / GW-303）
 
-- 状态：**已提出，待评审**
 - 日期：2026-10-11
-- 责任：TX（Laravel 主仓库实现）+ GW（Gateway 适配）
-- 关联任务：[task-backlog.md](./task-backlog.md) GW-302（本文档）、GW-303（事务幂等实现）、GW-304（Gateway 适配）、GW-305（交易状态机）、GW-306（支付回调）、GW-309（灰度验收）
-- 前置依赖：M2 多实例安全基础（限流、可信入口、Redis 安全态）已完成代码交付
+- 状态：**契约修订，TXBoard 实现审查中**（[TXBoard #216](https://github.com/ANRCM0/TXBoard/issues/216)，[TXBoard PR #217](https://github.com/ANRCM0/TXBoard/pull/217)）
+- 范围：`order.create`；checkout/cancel 为 GW-305，支付与回调另需 GW-306 验收
+- 生产门禁：Gateway `GATEWAY_ORDER_WRITE_ENABLED` **仍须默认关闭**，直至真实 MySQL 并发及端到端支付联调完成
 
-## 1. 背景与问题
+## 1. 为什么从纯参数派生键改为客户端操作键
 
-- 订单/支付写入当前**永久禁用**：`apps/gateway/src/routes/orders.ts` 的 `POST /gateway/v1/orders` 固定返回 405（`disabledWrite` 路由策略，零上游调用）。任何交易副作用都不可能经由 Gateway 发生。
-- Gateway 上游白名单（`services/upstream.ts` 的 `allowlistedPaths`）中**不存在**任何订单创建/支付端点，只有只读的 `userOrders / userOrderDetail / userOrderStatus / userPaymentMethods`。
-- M3 目标是在 TXBoard（Laravel + MySQL）实现订单创建幂等后，再经 Gateway 灰度开放 `POST /gateway/v1/orders`（GW-303→GW-304→GW-309）。
-- 核心风险：重复下单导致重复扣款/重复交付；100 并发同键同 body 必须只产生一单；进程重启、超时、失败重试不得产生第二单；同键不同 body 必须拒绝（防止键碰撞被利用改单）。
+旧草案以 `SHA-256(userId:operation:canonicalBody)` 唯一标识订单。此方案存在两点契约冲突：
 
-## 2. 决策（Decision）
+1. 同一 Key 不同参数会变成**不同 Key**，不可能返回 #216 要求的 `409 IDEMPOTENCY_CONFLICT`；
+2. 用户在 24 小时内两次主动购买同一计划，会被错误识别成同一次操作。
 
-采用**服务端派生幂等键 + MySQL 唯一约束 + 状态机**的方案：
+因此 GW-302 的**正式订单创建契约**采用“客户端独立操作 Key + 服务端请求指纹”：
 
-1. **幂等键 = userId + operation + 请求内容哈希**，由 Laravel 服务端从已校验的请求体派生，客户端不可指定或猜测。
-2. **持久化存储窗口 24 小时**（可配置），存于 MySQL 业务表，而非 Redis。
-3. **冲突语义**：同键同参数返回首次的同一结果；同键不同参数（哈希不同）视为不同请求，正常处理；同键重放且状态为 `in_progress` 时拒绝并提示重试；状态为 `failed_retryable` 时允许重试。
-4. **状态机三态**：`in_progress` / `succeeded` / `failed_retryable`。
-5. **幂等判断发生在 Laravel 事务内**，Gateway 只做透传与错误映射（GW-304），不持有、不复制业务幂等规则。
+- 客户端针对**单次购买意图**创建随机、不可预测的 `Idempotency-Key`；请求网络重试沿用同一 Key，另一次真正的购买必须使用新 Key。
+- 格式：`^[A-Za-z0-9._~-]{1,128}$`。Gateway 在入站验证、缺失或非法时返回 400、**零上游调用**。
+- Laravel 通过 `SHA-256( userId + ":" + operation + ":" + clientKey )` 存储 `key_hash`，**不持久化原始客户端键**。
+- Laravel 对**已验证和规范化**的业务字段产生独立 `request_hash = SHA-256(canonical_json({plan_id,period,coupon_code}))`。与 Gateway 的提示头相比，它才是确定冲突的权威依据。
+- 请求中的 `plan_id` 转为整数、周期映射到 TXBoard 原生期间、无优惠券时归一成 null；哈希不依赖 JSON 属性输入顺序。
+- 同一用户、操作和 Key 对应同一个唯一槽位；槽位保存的请求指纹不等于新请求指纹时，立即 409 `IDEMPOTENCY_CONFLICT`，不运行任何订单或资金副作用。
+- Laravel 的 `Idempotency-Key` 目前**可选**，以保持已经发布的 TXAPI/现有原生主题兼容；缺失时保留既有交易行为，**不承诺请求级重放保护**。Gateway 的订单写端点始终要求这个头，不允许走无保护的兼容路径。
+- `X-Idempotency-Key-Hint` 是 Gateway 计算的无身份关联值（`SHA-256(operation + "\\n" + canonical_json(body))`）；Laravel 不接受它作为身份、请求指纹或幂等键权威。
 
-## 3. 幂等键格式
+## 2. MySQL 模型与约束
 
-### 3.1 结构
+TXBoard 迁移：`2026_10_11_000001_create_idempotency_keys.php`
 
+```text
+idempotency_keys
+  id             BIGINT PRIMARY KEY
+  user_id        BIGINT NOT NULL
+  operation      VARCHAR(32) NOT NULL
+  key_hash       CHAR(64) NOT NULL
+  request_hash   CHAR(64) NOT NULL
+  status         VARCHAR(24) NOT NULL
+  trade_no       VARCHAR(64) NULL
+  result_snapshot JSON NULL
+  created_at     BIGINT NOT NULL  (Unix seconds)
+  updated_at     BIGINT NOT NULL  (Unix seconds)
+  expires_at     BIGINT NOT NULL  (Unix seconds)
+
+  UNIQUE(user_id, operation, key_hash)
+  INDEX(expires_at, id)
 ```
-idem_key := SHA-256( user_id ‖ ":" ‖ operation ‖ ":" ‖ canonical_json(validated_body) )
-```
 
-- `user_id`：Laravel 认证用户的整数 ID（字符串化）。访客/未认证请求不在本 ADR 范围（GW-310 快速购买单独评审，且仍必须绑定账号）。
-- `operation`：受控枚举，白名单化，不接受自由文本：
-  - `order.create`、`order.checkout`、`order.cancel`
-- `canonical_json`：**校验之后、进入业务逻辑之前**对请求体做规范化：
-  - 键按 Unicode 码点升序排序，去空白分隔，UTF-8 编码；
-  - 未知字段已在 strict schema 层拒绝（Gateway 与 Laravel 均为 strictObject），不存在"多一个字段绕过校验"的路径；
-  - 数值不做字符串化歧义处理以外的任何改动，浮点金额一律以分为单位的整数传入（TXBoard 现有金额约定）。
+`result_snapshot` 仅保存公开订单标识 `{"trade_no":"..."}`；**不存**用户名、Bearer、支付明文、余额、优惠码或个人信息。Laravel 重放时还会按用户 ID 查原订单；若原订单已不可用，返回冲突而非重新执行创建。
 
-存储列使用 `key_hash`（64 位十六进制字符串）作为唯一约束载体；原始参数**不落库**（只落状态与结果快照），避免明文 body 入库带来的合规面。
+## 3. 串行化与崩溃一致性
 
-### 3.2 为什么不由客户端提供 Idempotency-Key
+`OrderService::createFromRequest` 的事务执行顺序：
 
-- 客户端键（Stripe 式）需要服务端按"键+账号"存储并防御跨账号占用、需要额外的键格式校验与滥用面；
-- 本方案用 `userId + operation + body 哈希` 已经天然满足"同人同操作同参数=幂等"，且无需客户端改造、无需 SDK 新参数；
-- **保留扩展**：若未来网关/主题需要显式键（如离线重放），可在后续 ADR 追加"客户端键优先、缺失时回退派生键"，不阻塞当前设计。
+1. 对认证用户 `tx_user` 行执行 `SELECT ... FOR UPDATE`；同一用户经不同服务实例/不同 API 创建订单必须先串行化。
+2. 查询并锁定幂等槽位；**先处理成功重放或参数冲突，再做新订单的业务预校验**，避免已成功订单因“已有待支付订单”错误被拒绝。
+3. 无槽位时插入 `in_progress`；已过期槽位在事务内删除并重占位；`failed_retryable` 可重试。
+4. 在**同一个数据库事务**中校验套餐、处理余额与优惠券、创建订单，并把幂等记录置为 `succeeded` 及保存原 `trade_no`。
+5. 一起提交。崩溃、超时或业务异常会导致**幂等记录和订单副作用全部回滚**；不存在先成功落单再丢掉幂等记录的中间窗口。
 
-## 4. 持久化数据结构（TXBoard Laravel 迁移）
+注意：`in_progress` 是事务中的过渡状态，正常成功路径下不单独提交。因异常而回滚的新槽位直接消失、可以安全重试，不依赖提交 `failed_retryable` 标志；实现同时支持处理以前已留下的 `failed_retryable` 和 `in_progress` 状态。
 
-表：`idempotency_keys`（MySQL/InnoDB）
+对于已经持久化的 `in_progress`：
+- 新鲜的 `updated_at`：`409 IDEMPOTENCY_IN_PROGRESS` + `Retry-After: 2`。
+- 超过默认 15 分钟：由于持有用户行锁且幂等行锁，可独占接管并重试；必须仍遵守业务状态/余额检查。
+- 24 小时 TTL（`IDEMPOTENCY_TTL_HOURS`）独立于占位超时；过期即视为新操作意图。过期不会复活已取消/已支付订单，也不会绕过原有业务不变量。
+- `php artisan idempotency:prune` 每日按索引小批量删除过期行；不删除订单和资金历史。
 
-| 列 | 类型 | 说明 |
+## 4. API 行为表
+
+| 输入 | Laravel 订单创建行为 | Gateway（写端点打开时） |
 | --- | --- | --- |
-| `id` | bigint unsigned PK | 自增 |
-| `user_id` | bigint unsigned NOT NULL | 键的一部分 |
-| `operation` | varchar(32) NOT NULL | 枚举字符串（`order.create` 等） |
-| `key_hash` | char(64) NOT NULL | `SHA-256(user_id‖operation‖canonical body)` 十六进制 |
-| `state` | enum('in_progress','succeeded','failed_retryable') NOT NULL | 状态机当前态 |
-| `trade_no` | varchar(64) NULL | 成功时关联的交易号 |
-| `result_snapshot` | json NULL | 首次成功的响应 DTO 快照（脱敏，仅订单公开字段） |
-| `expires_at` | timestamp NOT NULL | `created_at + TTL`，GC 依据 |
-| `created_at` / `updated_at` | timestamp | 审计 |
+| 无 Key | TXAPI 兼容旧调用，不承诺请求重放 | 400，不转发 |
+| 非法 Key | 400 `VALIDATION_ERROR` | 400，不转发 |
+| 同 Key、同规范化请求、首次 | 201，新的 `trade_no` | 201，同一结果 |
+| 同 Key、同规范化请求、成功重放 | 201，**原** `trade_no`，不重扣余额/优惠券 | 201，同一结果 |
+| 同 Key、不同请求指纹 | 409 `IDEMPOTENCY_CONFLICT` | 保留 409 |
+| 同 Key、已提交的进行中记录 | 409 `IDEMPOTENCY_IN_PROGRESS`，Retry-After 2 | 保留 409 / Retry-After |
+| 首次业务校验失败 | 回滚声明与业务；允许使用同 Key 再试 | 返回业务错误 |
+| 同 Key 在 TTL 到期后再次使用 | 按新购买意图处理，仍受待支付订单等规则约束 | 同上 |
+| 新 Key 表示另一次真实购买 | 作为新操作处理，仍受业务规则限制 | 同上 |
 
-**唯一约束（核心）**：
+## 5. 范围、验证与回滚
 
-```sql
-UNIQUE KEY uk_idem (user_id, operation, key_hash)
-```
-
-该约束是整个方案的地基：
-
-- 并发 100 次同键同 body 时，只有一个 `INSERT` 成功，其余在唯一键冲突处串行化，走"读状态 → 返回已有结果/拒绝"路径；
-- 无 `SELECT` 预检竞态，无 Redis 丢状态风险（M3 Go/No-Go 明确：**Redis 去重不能替代 Laravel 持久化幂等**）；
-- 索引同时服务于按 `expires_at` 的定期 GC（可加二级索引或按分区，视数据量再定）。
-
-**快照大小上限**：`result_snapshot` 强制 ≤ 4KB（与 Gateway `maxResponseBytes` 量级匹配），超限只存 `trade_no + state`，客户端用只读接口补拉详情。
-
-## 5. 状态机
-
-```
-                ┌─────────────────────────────────────────────┐
-                │                                             │
-   INSERT ──► in_progress ──事务提交成功──► succeeded            │
-                │  │                          （锁定，返回快照）  │
-                │  └──业务失败（可重试）──► failed_retryable ───┘ 下次同键到达时
-                │                               允许重新进入 in_progress
-                └──进程崩溃/连接中断──► 停留在 in_progress（陈旧锁）
-```
-
-| 当前状态 | 同键到达时的行为 |
-| --- | --- |
-| `in_progress`（新鲜） | 拒绝：`409 IDEMPOTENCY_IN_PROGRESS`，响应带 `Retry-After`（默认 2s，指数建议客户端退避） |
-| `in_progress`（陈旧，`updated_at` 超过 `idem_in_progress_timeout`，默认 15 分钟） | 视为持有者已死亡：以 `updated_at` 为 CAS 守卫接管为 `in_progress`（条件 UPDATE，失败则转拒绝路径），允许重试 |
-| `succeeded` | 返回**首次的同一结果**（快照 + 同一 `trade_no`），HTTP 状态与首次一致 |
-| `failed_retryable` | 允许重试：删除/重置该行并重新执行（保留首次失败计数用于观测） |
-| 已过期（`expires_at` 已过） | 视为不存在，重新开始完整流程；GC 定时任务物理删除 |
-
-状态迁移仅允许：
-
-```
-∅ → in_progress → succeeded（终态）
-∅ → in_progress → failed_retryable → in_progress → succeeded
-```
-
-不允许 `succeeded → 任何其他状态`；不允许跳过 `in_progress` 直接写入终态。所有迁移在**同一事务**内与业务写操作一起提交。
-
-### 5.1 陈旧 in_progress 的处理（崩溃恢复）
-
-- 持有者崩溃时事务回滚，行可能停留在 `in_progress`（若插入在事务外先行落库）或整体回滚消失（若整体在同一事务）。**设计选择：先 INSERT 幂等行再开业务事务**，保证唯一约束先占位；业务失败时显式回写 `failed_retryable`。
-- 崩溃后行滞留 `in_progress`：超过 15 分钟（可配）视为陈旧，CAS 接管，避免用户永久卡死。
-- 15 分钟参数与 24h TTL 互相独立：TTL 管"结果复用期"，timeout 管"锁租约"。
-
-## 6. TTL 与并发决策（评审要点）
-
-| 决策点 | 选择 | 理由 |
-| --- | --- | --- |
-| 存储介质 | MySQL 唯一约束（持久化） | 任务矩阵明确 Redis 去重不能替代持久化幂等；Redis 异步故障转移可丢数据 |
-| TTL | 24h（`idempotency.ttl_hours` 配置） | 覆盖用户重试窗口与跨天支付回调恢复窗口；短于 24h 会漏掉"隔夜重试"，长于 24h 使冲突误判窗口变大 |
-| 冲突返回 | 同键同参数 → 200 + 首次快照；不同参数 → 哈希不同即不同键（正常处理） | "同键不同参数"在本设计下不会发生：参数是键的一部分 |
-| in_progress 并发 | 409 + Retry-After，客户端退避重试 | 不做服务端排队（避免把 BFF 变成任务队列）；客户端 SDK 对幂等 409 自动重试（GW-308） |
-| 陈旧锁 | 15 分钟 CAS 接管 | 崩溃/部署中断后用户不会被永久拒绝 |
-| 过期 GC | Laravel 定时命令 + `expires_at` 索引，批量删除 | 与业务写入解耦，删除失败不影响幂等正确性（过期行天然视为不存在） |
-| CAPTCHA / 限流 | **不因幂等绕过**：幂等判定在限流与 CAPTCHA 之后 | 幂等是正确性机制，不是免检通道（GW-203/209 的限额与挑战必须仍生效） |
-
-## 7. Gateway 侧适配方案（GW-304 预览）
-
-Gateway 的约束不变：**不持有管理 token、不复制业务规则、不做本地去重**。适配仅是"透传 + 映射"：
-
-1. **入参**：解除 `disabledWrite` 之前，`POST /gateway/v1/orders` 仍 405；开放时请求体经 strict schema 校验（未知字段 400），Bearer 必填（401），限流与 CAPTCHA 照常。
-2. **幂等键传递**：Gateway 计算 `key_hint = SHA-256(operation ‖ canonical_json(body))`（**不含 user_id**，Gateway 不持有可信 user_id，只有 Bearer），通过 `X-Idempotency-Key-Hint` 头透传给 Laravel；Laravel 侧用认证 user_id 重新派生最终键，**提示头仅用于日志关联与快速比对，不作为权威**。若提示头与 Laravel 派生不一致，以 Laravel 为准（日志记差异）。
-3. **错误映射**（`GatewayFailureCode` 增补）：
-
-| Laravel 响应 | Gateway 映射 | 说明 |
-| --- | --- | --- |
-| 409 `IDEMPOTENCY_IN_PROGRESS` | `409 IDEMPOTENCY_IN_PROGRESS` + `Retry-After` | 透传上游语义，不吞掉 |
-| 409 `IDEMPOTENCY_CONFLICT`（预留：同键不同参数，若未来启用客户端键） | `409 IDEMPOTENCY_CONFLICT` | 当前派生键设计下不会出现，保留字典位 |
-| 上游 4xx/5xx（非幂等） | 现有映射不变（502/504/429 等） | 不改动既有错误字典 |
-| 上游超时/断连 | `UPSTREAM_UNAVAILABLE` 502/504 | 客户端**不得自动重试 POST**，除非收到明确幂等信号（SDK 默认不自动重试写请求，GW-308） |
-
-4. **响应**：成功时返回上游订单 DTO（快照即此 DTO）；`result_snapshot` 的脱敏职责在 Laravel，Gateway 不再二次加工。
-5. **路由与开关**：新增 `orders.create` 上游 operation（`allowlistedPaths` 增补），默认 flag `off`，与 GW-309 灰度一致；开启前必须 GW-303/305/306 验收通过。
-
-## 8. 被否决的备选方案
-
-| 备选 | 否决理由 |
-| --- | --- |
-| Redis `SET NX PX` 去重（复用 GW-202 引擎） | Redis 异步故障转移可丢状态；M3 门槛明文要求持久化幂等；与支付资金安全不匹配 |
-| 仅业务列唯一索引（如 `user_id + plan_id + period`） | 无法表达优惠券/折扣码组合差异，误拒合法订单或漏放重复订单 |
-| 客户端提供 Idempotency-Key | 需管理跨账号键空间与格式校验，滥用面更大；派生键零客户端成本已满足需求 |
-| 数据库乐观锁（版本号列）代替唯一约束 | 仍需要唯一约束防止并发双插入，冗余 |
-| 幂等放在 Gateway（BFF 持有状态） | 违反 Gateway 不复制业务规则的边界；多实例下退化为 Redis 方案 |
-
-## 9. 验收标准（输入 GW-303）
-
-1. 100 并发同键同 body：恰有 1 单落库，其余 99 返回同一 `trade_no` 或 `409 IDEMPOTENCY_IN_PROGRESS`；唯一约束冲突零数据损坏。
-2. 重启/进程杀死后重放同键：不产生第二单（新鲜 in_progress → 409；陈旧 → 接管后仍只一单）。
-3. 同键不同参数：视为不同键，各自成单（证明键含内容哈希）。
-4. 失败重试：`failed_retryable` 后同键可再次成功；`succeeded` 后同键永远返回首次结果。
-5. TTL 到期后同键：按新请求处理。
-6. 幂等路径不跳过限流/CAPTCHA 的负例测试存在。
-7. Gateway 侧（GW-304）：无幂等提示头/头不一致时以 Laravel 派生为准；`IDEMPOTENCY_IN_PROGRESS` 透传不降级为 502。
-
-## 10. 风险与回滚
-
-- **风险**：`result_snapshot` 存了不该存的数据 → 快照字段白名单评审 + ≤4KB 上限 + 只读接口补拉。
-- **风险**：`in_progress` 租约误判（长事务 >15min）→ 租约可配，且业务事务必须短小；支付回调异步路径不进本表（GW-306 单独设计）。
-- **回滚**：本 ADR 与 GW-303 的迁移可独立回滚（删表/删 flag）；Gateway 侧关闭 `orders.create` flag 即恢复全 405，不动任何现有只读接口。
-
-## 11. 未决问题（评审输入）
-
-1. `operation` 是否需要覆盖"取消订单"（`order.cancel`）与"改单"？当前枚举已预留，范围以 M3 只放开 `order.create` 起步。
-2. 访客/快速购买（GW-310）是否沿用同一张表？建议沿用，但 `user_id` 前增加 scope 前缀，评审确认。
-3. `idempotency.ttl_hours` 的运维配置载体（Laravel config vs 部署 env），评审确认。
+- `order.create` 的交易保护归属 **TXBoard Laravel**。Gateway 只验证 Key 格式、透传 Bearer/头和映射错误；无 Redis 业务去重、无管理 Token、无价格计算。
+- 原仓库已移除独立 V1 订单控制器。本次挂载点是各调用方共用的 `OrderService`，不恢复旧 API 路由；如果未来开放另一 HTTP 入口，必须调用同一服务。
+- SQLite 功能测试覆盖 100 次相同 Key 重放、不同参数冲突、无 Key 兼容、失败回滚、模拟崩溃、过期、存量状态恢复。**这不等于 100 真正同时到达的 MySQL 请求**；生产开启前还需 MySQL 真并发和断连故障注入。
+- Gateway `GATEWAY_ORDER_WRITE_ENABLED` 在 GW-303、GW-305、GW-306、GW-309 联合验收前维持关闭。回滚时先关闭 flag；数据库幂等表保留，不要因应用回滚删除已记录的幂等凭证。
+- 任何 SDK 对订单写请求默认不自动重试；重试必须继续携带原 Key，且在明确故障/状态查询后控制退避。
