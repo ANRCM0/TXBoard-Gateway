@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
+import { getConnInfo } from '@hono/node-server/conninfo'
 import type { GatewayConfig } from './config/env.js'
 import type { CryptoService } from './services/crypto.js'
 import { GatewayFailure, type UpstreamFetcher } from './services/upstream.js'
@@ -356,7 +357,11 @@ export function createGatewayApp(
     const raw = c.req.raw as Request & { __peerIp?: string }
     // GW-215: the client IP used for every later decision is derived from this
     // single verdict only; no downstream code reads a forwarded header again.
-    const peer = peerAddressOf(raw)
+    // In production the Node adapter exposes the actual socket peer via c.env.incoming.
+    // The explicit request property remains a test-only seam for app.request().
+    let socketPeer: string | undefined
+    try { socketPeer = getConnInfo(c).remote.address } catch { /* non-Node test runtime */ }
+    const peer = socketPeer || peerAddressOf(raw)
     if (!peer) return fail(c, 'FORBIDDEN', 'Client peer address unavailable', 403)
     const verdict = evaluateRequest(peer, raw.headers, allowlist)
     if (verdict.reason === 'forged_headers') {
