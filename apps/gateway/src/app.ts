@@ -207,12 +207,13 @@ function installObservability(app: Hono<Bindings>, configured: GatewayObservabil
       status: readinessVerdict(snapshot) ? 'ready' : 'degraded',
       dependencies: snapshot,
     }
+    const httpStatus = payload.status === 'ready' ? 200 : 503
     logger.info('readiness.reported', {
-      requestId: c.get('requestId'), route: '/readyz', method: 'GET', status: 200,
+      requestId: c.get('requestId'), route: '/readyz', method: 'GET', status: httpStatus,
       outcome: payload.status,
     })
     return new Response(JSON.stringify(payload), {
-      status: 200,
+      status: httpStatus,
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
