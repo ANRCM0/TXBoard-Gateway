@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server'
+import { getConnInfo } from '@hono/node-server/conninfo'
 import { watch } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createGatewayApp } from './app.js'
@@ -73,7 +74,11 @@ const app = createGatewayApp(config, fetch, crypto, {
   metricsToken,
   probes,
 })
-serve({ fetch: app.fetch, hostname: config.host, port: config.port }, info => {
+serve({ fetch: (request, env, executionCtx) => {
+  const peer = getConnInfo({ env } as never).remote.address
+  if (peer) Object.defineProperty(request, '__peerIp', { value: peer, configurable: true })
+  return app.fetch(request, env, executionCtx)
+}, hostname: config.host, port: config.port }, info => {
   // GW-204: expose the peer address the trust decision reads. With @hono/node-server
   // the socket peer arrives as info.remoteAddress; the middleware also reads the
   // Request-level __peerIp seam so tests and raw servers behave identically.
