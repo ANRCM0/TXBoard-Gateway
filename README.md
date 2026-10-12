@@ -1,4 +1,6 @@
-# TXBoard Gateway
+# TXBoard Gateway（历史源码仓）
+
+> 2026-10-13 起，开发、测试与镜像发布迁至 [TXBoard 主仓的 gateway/](https://github.com/ANRCM0/TXBoard/tree/main/gateway)（主仓后续名 `tx-core`）。本仓保留原提交历史，停止独立 CI；安装和运维统一使用 [TXBoard-Deploy](https://github.com/ANRCM0/TXBoard-Deploy)。下文为迁移前的说明，现行文档以统一仓为准。
 
 **Docker-first、可选启用的 TXBoard 用户主题 API Gateway**，独立于 Laravel 核心业务，基于 Node.js 22 / Hono / TypeScript，并提供 `@txboard/theme-sdk`。当前运行 API 以 `/gateway/v1` 为前缀；未来与 TXBoard Native 统一的 BFF 使用 `/txapi/bff/v1`，**仍为目标方案**。TXBoard Laravel 始终负责认证、验证码、账户归属、订单、余额和支付。
 
