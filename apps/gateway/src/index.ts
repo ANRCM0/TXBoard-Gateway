@@ -9,12 +9,15 @@ import { loadLoginProtection } from './middleware/login-protection.js'
 import { RedisCaptchaChallenge, type CaptchaChallenge } from './services/captcha-challenge.js'
 import { compileIpAllowlist } from './middleware/security.js'
 import { configureObservability, observabilityState, type ReadinessProbes } from './middleware/observability.js'
-import { parseRateLimitConfig, setRuntimePolicies } from './middleware/rate-limit.js'
+import { parseRateLimitConfig, setRuntimePolicies, RedisRateLimiter } from './middleware/rate-limit.js'
 
 const config = loadConfig()
 // GW-204: fail closed at boot on a malformed ingress allowlist rather than at request time.
 compileIpAllowlist(config.trustedIngress.join(','))
 const redis = await loadRedisSecurity(process.env)
+const routeRateLimiter = process.env.GATEWAY_REDIS_URL
+  ? await RedisRateLimiter.connect(process.env.GATEWAY_REDIS_URL)
+  : undefined
 const loginProtection = await loadLoginProtection(process.env)
 const crypto = await loadCryptoService(process.env, redis)
 const accountWorkflows = process.env.GATEWAY_ACCOUNT_WORKFLOWS_ENABLED === 'true'
@@ -46,7 +49,7 @@ const metricsToken = process.env.GATEWAY_METRICS_TOKEN?.trim() || undefined
 const probes: ReadinessProbes = {
   // Redis powers replay protection, login protection and the rate limiter.
   // The node-redis client exposes its live state through `isReady`.
-  redis: () => (redis ? ((redis as unknown as { isReady: boolean }).isReady ? 'up' : 'down') : 'unknown'),
+  redis: () => (redis ? (redis.isReady ? 'up' : 'down') : 'unknown'),
   // HPKE sealed-envelope decryption; absent when the mode is disabled.
   hpke: () => (crypto ? 'up' : 'unknown'),
   // GW-209: the one-time CAPTCHA challenge store (Redis). 'unknown' when the
@@ -67,6 +70,7 @@ console.info(metricsToken
 const app = createGatewayApp(config, fetch, crypto, {
   accountWorkflows,
   limiter: redis ?? undefined,
+  rateLimiter: routeRateLimiter,
   loginProtection: loginProtection ?? undefined,
   captchaChallenge,
   trustedIngress: config.trustedIngress.join(','),

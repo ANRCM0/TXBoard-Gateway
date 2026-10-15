@@ -40,6 +40,9 @@ export class RedisSecurity implements ReplayStore, AccountLimiter {
     if (!client.isReady) throw new Error('Redis safety store not ready')
     return new RedisSecurity(client)
   }
+  /** Live connection state for readiness probes; does not expose the client or credentials. */
+  get isReady(): boolean { return this.client.isReady }
+
   private ready() {
     if (!this.client.isReady) {
       throw new GatewayFailure('UPSTREAM_UNAVAILABLE', 503, 'Redis safety store unavailable')

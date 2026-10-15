@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
+import { getConnInfo } from '@hono/node-server/conninfo'
 import type { GatewayConfig } from './config/env.js'
 import type { CryptoService } from './services/crypto.js'
 import { GatewayFailure, type UpstreamFetcher } from './services/upstream.js'
@@ -207,12 +208,13 @@ function installObservability(app: Hono<Bindings>, configured: GatewayObservabil
       status: readinessVerdict(snapshot) ? 'ready' : 'degraded',
       dependencies: snapshot,
     }
+    const httpStatus = payload.status === 'ready' ? 200 : 503
     logger.info('readiness.reported', {
-      requestId: c.get('requestId'), route: '/readyz', method: 'GET', status: 200,
+      requestId: c.get('requestId'), route: '/readyz', method: 'GET', status: httpStatus,
       outcome: payload.status,
     })
     return new Response(JSON.stringify(payload), {
-      status: 200,
+      status: httpStatus,
       headers: {
         'Content-Type': 'application/json; charset=utf-8',
         'Cache-Control': 'no-store',
@@ -362,7 +364,12 @@ export function createGatewayApp(
     const raw = c.req.raw as Request & { __peerIp?: string }
     // GW-215: the client IP used for every later decision is derived from this
     // single verdict only; no downstream code reads a forwarded header again.
-    const peer = raw.__peerIp ?? '0.0.0.0'
+    // In production the Node adapter exposes the actual socket peer via c.env.incoming.
+    // The explicit request property remains a test-only seam for app.request().
+    let socketPeer: string | undefined
+    try { socketPeer = getConnInfo(c).remote.address } catch { /* non-Node test runtime */ }
+    const peer = socketPeer || peerAddressOf(raw)
+    if (!peer) return fail(c, 'FORBIDDEN', 'Client peer address unavailable', 403)
     const verdict = evaluateRequest(peer, raw.headers, allowlist)
     if (verdict.reason === 'forged_headers') {
       // Structured, name-only signal: header VALUES are never logged.
